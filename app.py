@@ -58,6 +58,6 @@ def serve_data():
         return jsonify({"items": [{"label": "Error", "value": 0}]}), 500
 
 if __name__ == "__main__":
-    # For local development
-    app.run(host='0.0.0.0', port=8080, debug=True)
-
+    # Get port from environment variable or use 8080 for local development
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
