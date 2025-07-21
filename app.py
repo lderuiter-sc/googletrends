@@ -142,16 +142,15 @@ def force_update():
     start_background_update()
     return jsonify({"message": "Background update started"})
 
-# Initialize cache on startup
-@app.before_first_request
+# Initialize cache on startup (Flask 3.x compatible)
 def initialize_cache():
     """Initialize cache when app starts"""
     start_background_update()
 
+# Call initialize_cache when the module loads
+initialize_cache()
+
 if __name__ == "__main__":
-    # Start initial data fetch
-    start_background_update()
-    
     # Get port from environment variable or use 8080 for local development
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=False)
