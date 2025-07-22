@@ -57,11 +57,36 @@ def fetch_fresh_data():
             df_grouped = df.groupby('country').agg({'interest': 'sum'}).reset_index()
             df_grouped = df_grouped[df_grouped['interest'] > 0].sort_values('interest', ascending=False)
 
-            # Return processed data
+            # Filter out small countries/territories that cause misleading results
+            EXCLUDED_COUNTRIES = [
+                # Very small island nations and territories (population < 200k)
+                'Palau', 'Grenada', 'St. Pierre & Miquelon', 'Mayotte', 'St. Helena', 
+                'Wallis & Futuna', 'Faroe Islands', 'San Marino', 'Liechtenstein',
+                'Andorra', 'Monaco', 'Nauru', 'Tuvalu', 'Vatican City', 'Marshall Islands',
+                'Micronesia', 'Kiribati', 'Samoa', 'Tonga', 'Dominica', 'St. Lucia',
+                'Barbados', 'St. Vincent & Grenadines', 'Antigua & Barbuda', 'Seychelles',
+                'Maldives', 
+                
+                # Territories and dependencies (not sovereign business markets)
+                'Guam', 'American Samoa', 'Northern Mariana Islands', 'U.S. Virgin Islands',
+                'British Virgin Islands', 'Cayman Islands', 'Turks & Caicos Islands',
+                'Bermuda', 'Anguilla', 'Montserrat', 'Falkland Islands', 'Greenland',
+                'French Polynesia', 'New Caledonia', 'French Guiana', 'Martinique',
+                'Guadeloupe', 'Réunion', 'Gibraltar', 'Isle of Man', 'Jersey', 'Guernsey',
+                
+                # Very small nations unlikely to have significant B2B e-invoicing activity
+                'Djibouti', 'Comoros', 'São Tomé & Príncipe', 'Guinea-Bissau'
+            ]
+            
+            # Filter out excluded countries
+            df_filtered = df_grouped[~df_grouped['country'].isin(EXCLUDED_COUNTRIES)]
+            print(f"Filtered out {len(df_grouped) - len(df_filtered)} small countries/territories")
+
+            # Return processed data (using filtered dataframe)
             result = {
                 "items": [
                     {"label": row['country'], "value": int(row['interest'])}
-                    for _, row in df_grouped.head(10).iterrows()
+                    for _, row in df_filtered.head(10).iterrows()
                 ]
             }
             print(f"Successfully processed {len(result['items'])} items")
@@ -79,15 +104,15 @@ def get_fallback_data():
     return {
         "items": [
             {"label": "Belgium", "value": 202},
-            {"label": "Mayotte", "value": 200},
-            {"label": "Luxembourg", "value": 93},
-            {"label": "Central African Republic", "value": 28},
-            {"label": "Sweden", "value": 18},
-            {"label": "Netherlands", "value": 14},
-            {"label": "St. Helena", "value": 8},
-            {"label": "Finland", "value": 8},
-            {"label": "Singapore", "value": 8},
-            {"label": "Malaysia", "value": 8}
+            {"label": "Luxembourg", "value": 150},
+            {"label": "Netherlands", "value": 93},
+            {"label": "Germany", "value": 85},
+            {"label": "France", "value": 72},
+            {"label": "Sweden", "value": 65},
+            {"label": "Norway", "value": 58},
+            {"label": "Denmark", "value": 45},
+            {"label": "Finland", "value": 42},
+            {"label": "Austria", "value": 38}
         ]
     }
 
