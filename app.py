@@ -1,4 +1,4 @@
-# app.py - Simplified caching approach
+# app.py - Simplified caching approach with 12-week time series
 from pytrends.request import TrendReq
 import pandas as pd
 from flask import Flask, jsonify
@@ -107,9 +107,9 @@ def fetch_fresh_data():
         return None
             
 def fetch_timeseries_data():
-    """Fetch time series data for specific countries"""
+    """Fetch time series data for specific countries (aggregated weekly - 12 weeks)"""
     try:
-        print("Fetching time series data...")
+        print("Fetching 12-week time series data...")
         pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         
         # We'll get data for all keywords combined by fetching each country individually
@@ -124,6 +124,9 @@ def fetch_timeseries_data():
             'Germany': 'DE'
         }
         
+        # Use 3-month timeframe for 12 weeks of data
+        timeframe = 'today 3-m'  # ~12 weeks of data
+        
         for country in TRACKED_COUNTRIES:
             print(f"Processing time series for {country}...")
             geo_code = country_geo_map.get(country, '')
@@ -133,22 +136,26 @@ def fetch_timeseries_data():
                 continue
                 
             try:
-                # Get time series data for this country (last 3 months for better granularity)
-                pytrends.build_payload(KEYWORDS, timeframe='today 3-m', geo=geo_code)
+                # Get time series data for this country
+                pytrends.build_payload(KEYWORDS, timeframe=timeframe, geo=geo_code)
                 time_data = pytrends.interest_over_time()
                 
                 if not time_data.empty and len(time_data) > 0:
                     # Sum all keywords for each time point
                     time_data['total'] = time_data[KEYWORDS].sum(axis=1)
                     
-                    # Convert to list of values (excluding 'isPartial' column)
-                    country_data[country] = time_data['total'].tolist()
-                    print(f"Added {len(time_data)} data points for {country}")
+                    # Aggregate by week (Sunday to Saturday)
+                    time_data.index = pd.to_datetime(time_data.index)
+                    weekly_data = time_data['total'].resample('W-SUN').mean().round(0)
+                    
+                    # Convert to list of values
+                    country_data[country] = weekly_data.tolist()
+                    print(f"Added {len(weekly_data)} weekly data points for {country}")
                 else:
                     print(f"No time series data for {country}")
                 
                 # Add delay between countries
-                time.sleep(random.uniform(3, 5))
+                time.sleep(random.uniform(4, 6))
                 
             except Exception as e:
                 print(f"Error fetching time series for {country}: {e}")
@@ -158,25 +165,29 @@ def fetch_timeseries_data():
                 continue
         
         if country_data:
-            # Get dates from the last successful request
-            pytrends.build_payload(KEYWORDS, timeframe='today 3-m', geo='FR')
+            # Get dates from the last successful request for week labels
+            pytrends.build_payload(KEYWORDS, timeframe=timeframe, geo='FR')
             time_data = pytrends.interest_over_time()
             if not time_data.empty:
-                dates = [date.strftime('%Y-%m-%d') for date in time_data.index]
+                time_data.index = pd.to_datetime(time_data.index)
+                weekly_dates = time_data['total'].resample('W-SUN').mean().index
+                
+                # Format dates as "Week of YYYY-MM-DD" for clarity
+                date_labels = [f"Week of {date.strftime('%Y-%m-%d')}" for date in weekly_dates]
                 
                 # Format for line chart
                 result = {
-                    "dates": dates,
+                    "dates": date_labels,
                     "series": [
                         {
                             "name": country,
-                            "data": values
+                            "data": [int(val) if not pd.isna(val) else 0 for val in values]
                         }
                         for country, values in country_data.items()
                     ]
                 }
                 
-                print(f"Successfully created time series with {len(dates)} dates and {len(country_data)} countries")
+                print(f"Successfully created 12-week time series with {len(date_labels)} weeks and {len(country_data)} countries")
                 return result
         
         print("No time series data collected")
@@ -241,53 +252,57 @@ def serve_data():
 
 @app.route("/timeseries")
 def serve_timeseries():
-    """Serve time series data for line plots"""
+    """Serve 12-week aggregated time series data for line plots"""
     global cached_timeseries, timeseries_cache_timestamp
     
     now = datetime.now()
     
-    # Check if time series cache is valid (cache for 12 hours since it's more expensive to fetch)
+    # Check if time series cache is valid (cache for 12 hours - shorter since 12 weeks is faster to fetch)
     cache_valid = (cached_timeseries is not None and 
                    timeseries_cache_timestamp is not None and 
                    now - timeseries_cache_timestamp < timedelta(hours=12))
     
     if cache_valid:
-        print("Serving cached time series data")
+        print("Serving cached 12-week time series data")
         response = jsonify(cached_timeseries)
         response.headers['Content-Type'] = 'application/json'
         return response
     
     # Cache expired or doesn't exist - try to fetch fresh data
-    print("Time series cache expired - fetching fresh data...")
+    print("Time series cache expired - fetching fresh 12-week data...")
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
         # Successfully got fresh data
         cached_timeseries = fresh_data
         timeseries_cache_timestamp = now
-        print("Serving fresh time series data")
+        print("Serving fresh 12-week time series data")
         response = jsonify(cached_timeseries)
     else:
         # Failed to get fresh data - return fallback
         fallback_timeseries = get_fallback_timeseries()
-        print("Failed to get fresh time series data - serving fallback")
+        print("Failed to get fresh time series data - serving fallback 12-week data")
         response = jsonify(fallback_timeseries)
     
     response.headers['Content-Type'] = 'application/json'
     return response
 
 def get_fallback_timeseries():
-    """Return fallback time series data"""
-    # Generate sample dates for last 3 months (weekly data points)
+    """Return fallback time series data (12 weeks of weekly data)"""
     from datetime import timedelta
+    
     dates = []
     now = datetime.now()
-    for i in range(12):  # 12 weeks
+    
+    # Generate 12 weeks of data (weekly intervals)
+    for i in range(12):
         date = now - timedelta(weeks=i)
-        dates.append(date.strftime('%Y-%m-%d'))
+        # Format as "Week of YYYY-MM-DD" to match the real data format
+        dates.append(f"Week of {date.strftime('%Y-%m-%d')}")
     dates.reverse()  # Oldest first
     
-    # Sample data showing realistic trends
+    # Sample 12-week aggregated data showing realistic trends
+    # Values represent weekly averages for the last 3 months
     return {
         "dates": dates,
         "series": [
@@ -342,18 +357,25 @@ def refresh_data():
 
 @app.route("/refresh-timeseries")
 def refresh_timeseries():
-    """Force refresh time series data"""
+    """Force refresh 12-week time series data"""
     global cached_timeseries, timeseries_cache_timestamp
     
-    print("Force time series refresh requested")
+    print("Force 12-week time series refresh requested")
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
         cached_timeseries = fresh_data
         timeseries_cache_timestamp = datetime.now()
-        return jsonify({"message": "Time series refreshed successfully", "countries": len(fresh_data["series"])})
+        return jsonify({
+            "message": "12-week time series refreshed successfully", 
+            "countries": len(fresh_data["series"]),
+            "weeks": len(fresh_data["dates"])
+        })
     else:
-        return jsonify({"message": "Failed to refresh time series", "error": "Could not fetch from Google Trends"}), 500
+        return jsonify({
+            "message": "Failed to refresh 12-week time series", 
+            "error": "Could not fetch from Google Trends"
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
