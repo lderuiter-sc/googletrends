@@ -114,6 +114,7 @@ def fetch_timeseries_data():
         
         # We'll get data for all keywords combined by fetching each country individually
         country_data = {}
+        date_labels = None
         
         # Map display names to Google Trends geo codes
         country_geo_map = {
@@ -141,8 +142,17 @@ def fetch_timeseries_data():
                 time_data = pytrends.interest_over_time()
                 
                 if not time_data.empty and len(time_data) > 0:
-                    # Sum all keywords for each time point
-                    time_data['total'] = time_data[KEYWORDS].sum(axis=1)
+                    print(f"Raw data columns: {time_data.columns.tolist()}")
+                    print(f"Raw data shape: {time_data.shape}")
+                    
+                    # Sum all keywords for each time point (exclude 'isPartial' if it exists)
+                    keyword_cols = [col for col in time_data.columns if col in KEYWORDS]
+                    if keyword_cols:
+                        time_data['total'] = time_data[keyword_cols].sum(axis=1)
+                        print(f"Created total column with keywords: {keyword_cols}")
+                    else:
+                        print(f"No keyword columns found. Available columns: {time_data.columns.tolist()}")
+                        continue
                     
                     # Aggregate by week (Sunday to Saturday)
                     time_data.index = pd.to_datetime(time_data.index)
@@ -151,6 +161,11 @@ def fetch_timeseries_data():
                     # Convert to list of values
                     country_data[country] = weekly_data.tolist()
                     print(f"Added {len(weekly_data)} weekly data points for {country}")
+                    
+                    # Store date labels from first successful country (they should all be the same)
+                    if date_labels is None:
+                        date_labels = [f"Week of {date.strftime('%Y-%m-%d')}" for date in weekly_data.index]
+                        print(f"Generated {len(date_labels)} date labels")
                 else:
                     print(f"No time series data for {country}")
                 
@@ -164,37 +179,29 @@ def fetch_timeseries_data():
                     time.sleep(30)
                 continue
         
-        if country_data:
-            # Get dates from the last successful request for week labels
-            pytrends.build_payload(KEYWORDS, timeframe=timeframe, geo='FR')
-            time_data = pytrends.interest_over_time()
-            if not time_data.empty:
-                time_data.index = pd.to_datetime(time_data.index)
-                weekly_dates = time_data['total'].resample('W-SUN').mean().index
-                
-                # Format dates as "Week of YYYY-MM-DD" for clarity
-                date_labels = [f"Week of {date.strftime('%Y-%m-%d')}" for date in weekly_dates]
-                
-                # Format for line chart
-                result = {
-                    "dates": date_labels,
-                    "series": [
-                        {
-                            "name": country,
-                            "data": [int(val) if not pd.isna(val) else 0 for val in values]
-                        }
-                        for country, values in country_data.items()
-                    ]
-                }
-                
-                print(f"Successfully created 12-week time series with {len(date_labels)} weeks and {len(country_data)} countries")
-                return result
+        if country_data and date_labels:
+            # Format for line chart
+            result = {
+                "dates": date_labels,
+                "series": [
+                    {
+                        "name": country,
+                        "data": [int(val) if not pd.isna(val) else 0 for val in values]
+                    }
+                    for country, values in country_data.items()
+                ]
+            }
+            
+            print(f"Successfully created 12-week time series with {len(date_labels)} weeks and {len(country_data)} countries")
+            return result
         
         print("No time series data collected")
         return None
         
     except Exception as e:
         print(f"Error fetching time series data: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def get_fallback_data():
