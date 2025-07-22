@@ -10,12 +10,19 @@ from datetime import datetime, timedelta
 # Set your keywords
 KEYWORDS = ['e-invoicing', 'PEPPOL']  # Reduced to 2 keywords for reliability
 
+# Countries for time series analysis
+TRACKED_COUNTRIES = ['France', 'Belgium', 'Malaysia', 'United Arab Emirates', 'Germany']
+
 app = Flask(__name__)
 
 # Simple cache variables
 cached_data = None
 cache_timestamp = None
 cache_duration_hours = 6
+
+# Time series cache
+cached_timeseries = None
+timeseries_cache_timestamp = None
 
 def fetch_fresh_data():
     """Fetch fresh data from Google Trends"""
@@ -98,6 +105,86 @@ def fetch_fresh_data():
     except Exception as e:
         print(f"Error fetching data: {e}")
         return None
+            
+def fetch_timeseries_data():
+    """Fetch time series data for specific countries"""
+    try:
+        print("Fetching time series data...")
+        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
+        
+        # We'll get data for all keywords combined by fetching each country individually
+        country_data = {}
+        
+        # Map display names to Google Trends geo codes
+        country_geo_map = {
+            'France': 'FR',
+            'Belgium': 'BE', 
+            'Malaysia': 'MY',
+            'United Arab Emirates': 'AE',
+            'Germany': 'DE'
+        }
+        
+        for country in TRACKED_COUNTRIES:
+            print(f"Processing time series for {country}...")
+            geo_code = country_geo_map.get(country, '')
+            
+            if not geo_code:
+                print(f"No geo code found for {country}")
+                continue
+                
+            try:
+                # Get time series data for this country (last 3 months for better granularity)
+                pytrends.build_payload(KEYWORDS, timeframe='today 3-m', geo=geo_code)
+                time_data = pytrends.interest_over_time()
+                
+                if not time_data.empty and len(time_data) > 0:
+                    # Sum all keywords for each time point
+                    time_data['total'] = time_data[KEYWORDS].sum(axis=1)
+                    
+                    # Convert to list of values (excluding 'isPartial' column)
+                    country_data[country] = time_data['total'].tolist()
+                    print(f"Added {len(time_data)} data points for {country}")
+                else:
+                    print(f"No time series data for {country}")
+                
+                # Add delay between countries
+                time.sleep(random.uniform(3, 5))
+                
+            except Exception as e:
+                print(f"Error fetching time series for {country}: {e}")
+                if "429" in str(e):
+                    print("Rate limited - waiting 30 seconds...")
+                    time.sleep(30)
+                continue
+        
+        if country_data:
+            # Get dates from the last successful request
+            pytrends.build_payload(KEYWORDS, timeframe='today 3-m', geo='FR')
+            time_data = pytrends.interest_over_time()
+            if not time_data.empty:
+                dates = [date.strftime('%Y-%m-%d') for date in time_data.index]
+                
+                # Format for line chart
+                result = {
+                    "dates": dates,
+                    "series": [
+                        {
+                            "name": country,
+                            "data": values
+                        }
+                        for country, values in country_data.items()
+                    ]
+                }
+                
+                print(f"Successfully created time series with {len(dates)} dates and {len(country_data)} countries")
+                return result
+        
+        print("No time series data collected")
+        return None
+        
+    except Exception as e:
+        print(f"Error fetching time series data: {e}")
+        return None
 
 def get_fallback_data():
     """Return fallback data when fresh data isn't available"""
@@ -152,6 +239,66 @@ def serve_data():
     response.headers['Content-Type'] = 'application/json'
     return response
 
+@app.route("/timeseries")
+def serve_timeseries():
+    """Serve time series data for line plots"""
+    global cached_timeseries, timeseries_cache_timestamp
+    
+    now = datetime.now()
+    
+    # Check if time series cache is valid (cache for 12 hours since it's more expensive to fetch)
+    cache_valid = (cached_timeseries is not None and 
+                   timeseries_cache_timestamp is not None and 
+                   now - timeseries_cache_timestamp < timedelta(hours=12))
+    
+    if cache_valid:
+        print("Serving cached time series data")
+        response = jsonify(cached_timeseries)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    
+    # Cache expired or doesn't exist - try to fetch fresh data
+    print("Time series cache expired - fetching fresh data...")
+    fresh_data = fetch_timeseries_data()
+    
+    if fresh_data:
+        # Successfully got fresh data
+        cached_timeseries = fresh_data
+        timeseries_cache_timestamp = now
+        print("Serving fresh time series data")
+        response = jsonify(cached_timeseries)
+    else:
+        # Failed to get fresh data - return fallback
+        fallback_timeseries = get_fallback_timeseries()
+        print("Failed to get fresh time series data - serving fallback")
+        response = jsonify(fallback_timeseries)
+    
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
+def get_fallback_timeseries():
+    """Return fallback time series data"""
+    # Generate sample dates for last 3 months (weekly data points)
+    from datetime import timedelta
+    dates = []
+    now = datetime.now()
+    for i in range(12):  # 12 weeks
+        date = now - timedelta(weeks=i)
+        dates.append(date.strftime('%Y-%m-%d'))
+    dates.reverse()  # Oldest first
+    
+    # Sample data showing realistic trends
+    return {
+        "dates": dates,
+        "series": [
+            {"name": "Belgium", "data": [45, 48, 52, 47, 55, 58, 62, 59, 65, 68, 71, 75]},
+            {"name": "France", "data": [35, 38, 42, 39, 45, 48, 52, 49, 55, 58, 61, 65]},
+            {"name": "Germany", "data": [40, 43, 47, 44, 50, 53, 57, 54, 60, 63, 66, 70]},
+            {"name": "Malaysia", "data": [15, 18, 22, 19, 25, 28, 32, 29, 35, 38, 41, 45]},
+            {"name": "United Arab Emirates", "data": [20, 23, 27, 24, 30, 33, 37, 34, 40, 43, 46, 50]}
+        ]
+    }
+
 @app.route("/health")
 def health_check():
     """Health check endpoint"""
@@ -160,18 +307,27 @@ def health_check():
 @app.route("/status")
 def status():
     """Status endpoint"""
-    global cached_data, cache_timestamp
+    global cached_data, cache_timestamp, cached_timeseries, timeseries_cache_timestamp
     
     return jsonify({
+        # Leaderboard cache info
         "cached_data_exists": cached_data is not None,
         "cache_timestamp": cache_timestamp.isoformat() if cache_timestamp else None,
         "hours_since_update": (datetime.now() - cache_timestamp).total_seconds() / 3600 if cache_timestamp else None,
-        "cache_duration_hours": cache_duration_hours
+        "cache_duration_hours": cache_duration_hours,
+        
+        # Time series cache info
+        "timeseries_cached": cached_timeseries is not None,
+        "timeseries_cache_timestamp": timeseries_cache_timestamp.isoformat() if timeseries_cache_timestamp else None,
+        "timeseries_hours_since_update": (datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600 if timeseries_cache_timestamp else None,
+        
+        # Tracked countries
+        "tracked_countries": TRACKED_COUNTRIES
     })
 
 @app.route("/refresh")
 def refresh_data():
-    """Force refresh data"""
+    """Force refresh leaderboard data"""
     global cached_data, cache_timestamp
     
     print("Force refresh requested")
@@ -183,6 +339,21 @@ def refresh_data():
         return jsonify({"message": "Data refreshed successfully", "items": len(cached_data["items"])})
     else:
         return jsonify({"message": "Failed to refresh data", "error": "Could not fetch from Google Trends"}), 500
+
+@app.route("/refresh-timeseries")
+def refresh_timeseries():
+    """Force refresh time series data"""
+    global cached_timeseries, timeseries_cache_timestamp
+    
+    print("Force time series refresh requested")
+    fresh_data = fetch_timeseries_data()
+    
+    if fresh_data:
+        cached_timeseries = fresh_data
+        timeseries_cache_timestamp = datetime.now()
+        return jsonify({"message": "Time series refreshed successfully", "countries": len(fresh_data["series"])})
+    else:
+        return jsonify({"message": "Failed to refresh time series", "error": "Could not fetch from Google Trends"}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
