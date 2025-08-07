@@ -23,7 +23,7 @@ LOCALIZED_KEYWORDS = {
     'DE': ['e-rechnung', 'elektronische rechnung', 'e-invoicing'],
     'MY': ['e-invois', 'e-invoice', 'e-invoicing'],
     'BE': ['e-facturatie', 'e-invoicing', 'PEPPOL'],  
-    'AE': ['e-invoicing', 'electronic invoice', 'digital invoice']  # English dominant
+    'AE': ['e-invoicing', 'الفاتورة الإلكترونية','الفوترة الإلكترونية',]  
 }
 
 # Countries for time series analysis
