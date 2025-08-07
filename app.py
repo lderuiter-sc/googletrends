@@ -41,7 +41,7 @@ def fetch_fresh_data():
                 time.sleep(delay)
             
             try:
-                pytrends.build_payload([keyword], timeframe='today 1-m')
+                pytrends.build_payload([keyword], timeframe='today 3-m')
                 region_data = pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=True)
                 
                 if not region_data.empty:
