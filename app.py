@@ -1,4 +1,4 @@
-# app.py - Simplified caching approach with 12-week time series
+# app.py - Simple enhancement with better keywords only
 from pytrends.request import TrendReq
 import pandas as pd
 from flask import Flask, jsonify
@@ -7,8 +7,24 @@ import random
 import os
 from datetime import datetime, timedelta
 
-# Set your keywords
-KEYWORDS = ['e-invoicing', 'PEPPOL']  # Reduced to 2 keywords for reliability
+# ============== ENHANCED KEYWORD STRATEGY ==============
+# Primary keywords (original)
+KEYWORDS_PRIMARY = ['e-invoicing', 'PEPPOL']
+
+# Additional broader keywords for better search volume
+KEYWORDS_BROAD = ['electronic invoice', 'digital invoice', 'invoice automation']
+
+# Combine for leaderboard (more keywords = more volume)
+KEYWORDS = KEYWORDS_PRIMARY + KEYWORDS_BROAD
+
+# Localized keywords by country for time series (better local relevance)
+LOCALIZED_KEYWORDS = {
+    'FR': ['facture électronique', 'facturation electronique', 'e-invoicing'],
+    'DE': ['e-rechnung', 'elektronische rechnung', 'e-invoicing'],
+    'MY': ['e-invois', 'e-invoice', 'e-invoicing'],
+    'BE': ['e-facturatie', 'e-invoicing', 'PEPPOL'],  
+    'AE': ['e-invoicing', 'electronic invoice', 'digital invoice']  # English dominant
+}
 
 # Countries for time series analysis
 TRACKED_COUNTRIES = ['France', 'Belgium', 'Malaysia', 'United Arab Emirates', 'Germany']
@@ -107,12 +123,11 @@ def fetch_fresh_data():
         return None
             
 def fetch_timeseries_data():
-    """Fetch time series data for specific countries (aggregated weekly - 12 weeks)"""
+    """Fetch time series data for specific countries with localized keywords"""
     try:
         print("Fetching 12-week time series data...")
         pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         
-        # We'll get data for all keywords combined by fetching each country individually
         country_data = {}
         date_labels = None
         
@@ -135,10 +150,18 @@ def fetch_timeseries_data():
             if not geo_code:
                 print(f"No geo code found for {country}")
                 continue
+            
+            # Use localized keywords if available, otherwise use primary keywords
+            if geo_code in LOCALIZED_KEYWORDS:
+                keywords_to_use = LOCALIZED_KEYWORDS[geo_code]
+                print(f"Using localized keywords for {country}: {keywords_to_use}")
+            else:
+                keywords_to_use = KEYWORDS_PRIMARY
+                print(f"Using default keywords for {country}: {keywords_to_use}")
                 
             try:
-                # Get time series data for this country
-                pytrends.build_payload(KEYWORDS, timeframe=timeframe, geo=geo_code)
+                # Get time series data for this country with appropriate keywords
+                pytrends.build_payload(keywords_to_use, timeframe=timeframe, geo=geo_code)
                 time_data = pytrends.interest_over_time()
                 
                 if not time_data.empty and len(time_data) > 0:
@@ -146,7 +169,7 @@ def fetch_timeseries_data():
                     print(f"Raw data shape: {time_data.shape}")
                     
                     # Sum all keywords for each time point (exclude 'isPartial' if it exists)
-                    keyword_cols = [col for col in time_data.columns if col in KEYWORDS]
+                    keyword_cols = [col for col in time_data.columns if col in keywords_to_use]
                     if keyword_cols:
                         time_data['total'] = time_data[keyword_cols].sum(axis=1)
                         print(f"Created total column with keywords: {keyword_cols}")
@@ -344,7 +367,11 @@ def status():
         "timeseries_hours_since_update": (datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600 if timeseries_cache_timestamp else None,
         
         # Tracked countries
-        "tracked_countries": TRACKED_COUNTRIES
+        "tracked_countries": TRACKED_COUNTRIES,
+        
+        # Keywords being used
+        "keywords_leaderboard": KEYWORDS,
+        "keywords_localized": LOCALIZED_KEYWORDS
     })
 
 @app.route("/refresh")
