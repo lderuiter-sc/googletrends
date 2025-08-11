@@ -1,6 +1,7 @@
-# app.py - Simple enhancement with better keywords only
+# app.py - Monthly trends version for better stability
 from pytrends.request import TrendReq
 import pandas as pd
+from pandas.tseries import offsets as pd_offsets
 from flask import Flask, jsonify
 import time
 import random
@@ -23,7 +24,7 @@ LOCALIZED_KEYWORDS = {
     'DE': ['e-rechnung', 'elektronische rechnung', 'e-invoicing'],
     'MY': ['e-invois', 'e-invoice', 'e-invoicing'],
     'BE': ['e-facturatie', 'e-invoicing', 'PEPPOL'],  
-    'AE': ['e-invoicing', 'الفاتورة الإلكترونية','الفوترة الإلكترونية',]  
+    'AE': ['e-invoicing', 'electronic invoice', 'VAT invoice UAE']  # Added UAE-specific
 }
 
 # Countries for time series analysis
@@ -123,9 +124,9 @@ def fetch_fresh_data():
         return None
             
 def fetch_timeseries_data():
-    """Fetch time series data for specific countries with localized keywords"""
+    """Fetch MONTHLY time series data from January 2025 to present"""
     try:
-        print("Fetching 12-week time series data...")
+        print("Fetching monthly time series data (Jan 2025 - Present)...")
         pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         
         country_data = {}
@@ -140,11 +141,14 @@ def fetch_timeseries_data():
             'Germany': 'DE'
         }
         
-        # Use 3-month timeframe for 12 weeks of data
-        timeframe = 'today 3-m'  # ~12 weeks of data
+        # ============== CHANGED: Dynamic timeframe from Jan 2025 to current date ==============
+        # Use a dynamic date range from January 1, 2025 to today
+        today = datetime.now().strftime('%Y-%m-%d')
+        timeframe = f'2025-01-01 {today}'  # January 1, 2025 to current date
+        print(f"Using dynamic timeframe: {timeframe}")
         
         for country in TRACKED_COUNTRIES:
-            print(f"Processing time series for {country}...")
+            print(f"Processing monthly time series for {country}...")
             geo_code = country_geo_map.get(country, '')
             
             if not geo_code:
@@ -167,6 +171,7 @@ def fetch_timeseries_data():
                 if not time_data.empty and len(time_data) > 0:
                     print(f"Raw data columns: {time_data.columns.tolist()}")
                     print(f"Raw data shape: {time_data.shape}")
+                    print(f"Date range: {time_data.index[0]} to {time_data.index[-1]}")
                     
                     # Sum all keywords for each time point (exclude 'isPartial' if it exists)
                     keyword_cols = [col for col in time_data.columns if col in keywords_to_use]
@@ -177,18 +182,26 @@ def fetch_timeseries_data():
                         print(f"No keyword columns found. Available columns: {time_data.columns.tolist()}")
                         continue
                     
-                    # Aggregate by week (Sunday to Saturday)
+                    # ============== CHANGED: Aggregate by MONTH instead of week ==============
                     time_data.index = pd.to_datetime(time_data.index)
-                    weekly_data = time_data['total'].resample('W-SUN').mean().round(0)
+                    monthly_data = time_data['total'].resample('M').mean().round(0)
+                    
+                    # Ensure we have data for all months from Jan to current month
+                    # Fill any missing months with 0
+                    current_date = datetime.now()
+                    end_of_current_month = pd.Timestamp(current_date.year, current_date.month, 1) + pd_offsets.MonthEnd(0)
+                    all_months = pd.date_range(start='2025-01-01', end=end_of_current_month, freq='M')
+                    monthly_data = monthly_data.reindex(all_months, fill_value=0)
                     
                     # Convert to list of values
-                    country_data[country] = weekly_data.tolist()
-                    print(f"Added {len(weekly_data)} weekly data points for {country}")
+                    country_data[country] = monthly_data.tolist()
+                    print(f"Added {len(monthly_data)} monthly data points for {country}")
                     
-                    # Store date labels from first successful country (they should all be the same)
+                    # Store date labels from first successful country
                     if date_labels is None:
-                        date_labels = [f"Week of {date.strftime('%Y-%m-%d')}" for date in weekly_data.index]
-                        print(f"Generated {len(date_labels)} date labels")
+                        # ============== CHANGED: Format as month names ==============
+                        date_labels = [date.strftime('%B %Y') for date in monthly_data.index]
+                        print(f"Generated {len(date_labels)} month labels: {date_labels}")
                 else:
                     print(f"No time series data for {country}")
                 
@@ -204,6 +217,7 @@ def fetch_timeseries_data():
         
         if country_data and date_labels:
             # Format for line chart
+            current_month_year = datetime.now().strftime('%B %Y')
             result = {
                 "dates": date_labels,
                 "series": [
@@ -212,10 +226,18 @@ def fetch_timeseries_data():
                         "data": [int(val) if not pd.isna(val) else 0 for val in values]
                     }
                     for country, values in country_data.items()
-                ]
+                ],
+                "metadata": {
+                    "period": "monthly",
+                    "start": "January 2025",
+                    "end": current_month_year,
+                    "data_points": len(date_labels),
+                    "last_updated": datetime.now().isoformat()
+                }
             }
             
-            print(f"Successfully created 12-week time series with {len(date_labels)} weeks and {len(country_data)} countries")
+            print(f"Successfully created monthly time series with {len(date_labels)} months and {len(country_data)} countries")
+            print(f"Date range: January 2025 to {current_month_year}")
             return result
         
         print("No time series data collected")
@@ -282,66 +304,86 @@ def serve_data():
 
 @app.route("/timeseries")
 def serve_timeseries():
-    """Serve 12-week aggregated time series data for line plots"""
+    """Serve monthly time series data for line plots"""
     global cached_timeseries, timeseries_cache_timestamp
     
     now = datetime.now()
     
-    # Check if time series cache is valid (cache for 12 hours - shorter since 12 weeks is faster to fetch)
+    # Check if time series cache is valid (cache for 12 hours)
     cache_valid = (cached_timeseries is not None and 
                    timeseries_cache_timestamp is not None and 
                    now - timeseries_cache_timestamp < timedelta(hours=12))
     
     if cache_valid:
-        print("Serving cached 12-week time series data")
+        print("Serving cached monthly time series data")
         response = jsonify(cached_timeseries)
         response.headers['Content-Type'] = 'application/json'
         return response
     
     # Cache expired or doesn't exist - try to fetch fresh data
-    print("Time series cache expired - fetching fresh 12-week data...")
+    print("Time series cache expired - fetching fresh monthly data...")
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
         # Successfully got fresh data
         cached_timeseries = fresh_data
         timeseries_cache_timestamp = now
-        print("Serving fresh 12-week time series data")
+        print("Serving fresh monthly time series data")
         response = jsonify(cached_timeseries)
     else:
         # Failed to get fresh data - return fallback
         fallback_timeseries = get_fallback_timeseries()
-        print("Failed to get fresh time series data - serving fallback 12-week data")
+        print("Failed to get fresh time series data - serving fallback monthly data")
         response = jsonify(fallback_timeseries)
     
     response.headers['Content-Type'] = 'application/json'
     return response
 
 def get_fallback_timeseries():
-    """Return fallback time series data (12 weeks of weekly data)"""
-    from datetime import timedelta
-    
+    """Return fallback MONTHLY time series data (Jan 2025 to current month)"""
+    # ============== CHANGED: Dynamic monthly fallback data ==============
+    # Generate month labels from January 2025 to current month
+    current_date = datetime.now()
     dates = []
-    now = datetime.now()
+    start_date = datetime(2025, 1, 1)
     
-    # Generate 12 weeks of data (weekly intervals)
-    for i in range(12):
-        date = now - timedelta(weeks=i)
-        # Format as "Week of YYYY-MM-DD" to match the real data format
-        dates.append(f"Week of {date.strftime('%Y-%m-%d')}")
-    dates.reverse()  # Oldest first
+    while start_date <= current_date:
+        dates.append(start_date.strftime('%B %Y'))
+        # Move to next month
+        if start_date.month == 12:
+            start_date = start_date.replace(year=start_date.year + 1, month=1)
+        else:
+            start_date = start_date.replace(month=start_date.month + 1)
     
-    # Sample 12-week aggregated data showing realistic trends
-    # Values represent weekly averages for the last 3 months
+    # Generate sample data for each month (increasing trend)
+    num_months = len(dates)
+    base_values = {
+        "Belgium": 45,
+        "France": 35,
+        "Germany": 40,
+        "Malaysia": 25,
+        "United Arab Emirates": 20
+    }
+    
+    series_data = {}
+    for country, base in base_values.items():
+        # Generate increasing trend with slight randomness
+        data = [base + (i * 3) + random.randint(-2, 2) for i in range(num_months)]
+        series_data[country] = data
+    
     return {
         "dates": dates,
         "series": [
-            {"name": "Belgium", "data": [45, 48, 52, 47, 55, 58, 62, 59, 65, 68, 71, 75]},
-            {"name": "France", "data": [35, 38, 42, 39, 45, 48, 52, 49, 55, 58, 61, 65]},
-            {"name": "Germany", "data": [40, 43, 47, 44, 50, 53, 57, 54, 60, 63, 66, 70]},
-            {"name": "Malaysia", "data": [15, 18, 22, 19, 25, 28, 32, 29, 35, 38, 41, 45]},
-            {"name": "United Arab Emirates", "data": [20, 23, 27, 24, 30, 33, 37, 34, 40, 43, 46, 50]}
-        ]
+            {"name": country, "data": data}
+            for country, data in series_data.items()
+        ],
+        "metadata": {
+            "period": "monthly",
+            "start": "January 2025",
+            "end": current_date.strftime('%B %Y'),
+            "data_points": num_months,
+            "note": "Fallback data - Google Trends unavailable"
+        }
     }
 
 @app.route("/health")
@@ -353,6 +395,8 @@ def health_check():
 def status():
     """Status endpoint"""
     global cached_data, cache_timestamp, cached_timeseries, timeseries_cache_timestamp
+    
+    current_month_year = datetime.now().strftime('%B %Y')
     
     return jsonify({
         # Leaderboard cache info
@@ -371,7 +415,11 @@ def status():
         
         # Keywords being used
         "keywords_leaderboard": KEYWORDS,
-        "keywords_localized": LOCALIZED_KEYWORDS
+        "keywords_localized": LOCALIZED_KEYWORDS,
+        
+        # Time series info
+        "timeseries_period": "monthly",
+        "timeseries_range": f"January 2025 - {current_month_year}"
     })
 
 @app.route("/refresh")
@@ -391,23 +439,25 @@ def refresh_data():
 
 @app.route("/refresh-timeseries")
 def refresh_timeseries():
-    """Force refresh 12-week time series data"""
+    """Force refresh monthly time series data"""
     global cached_timeseries, timeseries_cache_timestamp
     
-    print("Force 12-week time series refresh requested")
+    print("Force monthly time series refresh requested")
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
         cached_timeseries = fresh_data
         timeseries_cache_timestamp = datetime.now()
+        current_month_year = datetime.now().strftime('%B %Y')
         return jsonify({
-            "message": "12-week time series refreshed successfully", 
+            "message": "Monthly time series refreshed successfully", 
             "countries": len(fresh_data["series"]),
-            "weeks": len(fresh_data["dates"])
+            "months": len(fresh_data["dates"]),
+            "period": f"January 2025 - {current_month_year}"
         })
     else:
         return jsonify({
-            "message": "Failed to refresh 12-week time series", 
+            "message": "Failed to refresh monthly time series", 
             "error": "Could not fetch from Google Trends"
         }), 500
 
