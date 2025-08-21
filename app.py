@@ -201,6 +201,7 @@ def fetch_timeseries_data():
                     if date_labels is None:
                         # ============== CHANGED: Format as month names ==============
                         date_labels = [date.strftime('%b') for date in monthly_data.index]
+
                         print(f"Generated {len(date_labels)} month labels: {date_labels}")
                 else:
                     print(f"No time series data for {country}")
