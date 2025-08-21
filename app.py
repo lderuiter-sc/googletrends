@@ -24,11 +24,14 @@ LOCALIZED_KEYWORDS = {
     'DE': ['e-rechnung', 'elektronische rechnung', 'e-invoicing'],
     'MY': ['e-invois', 'e-invoice', 'e-invoicing'],
     'BE': ['e-facturatie', 'e-invoicing', 'PEPPOL'],  
-    'AE': ['e-invoicing', 'electronic invoice', 'VAT invoice UAE']  # Added UAE-specific
+    'AE': ['e-invoicing', 'electronic invoice', 'VAT invoice UAE'],
+    'GB': ['e-invoicing', 'PEPPOL', 'electronic invoice UK'],  # UK
+    'US': ['e-invoicing', 'electronic invoice', 'invoice automation'],  # US
+    'NL': ['e-facturatie', 'e-invoicing', 'PEPPOL']  # Netherlands
 }
 
-# Countries for time series analysis
-TRACKED_COUNTRIES = ['France', 'Belgium', 'Malaysia', 'United Arab Emirates', 'Germany']
+# Countries for time series analysis - UPDATED WITH UK, US, NL
+TRACKED_COUNTRIES = ['France', 'Belgium', 'Malaysia', 'United Arab Emirates', 'Germany', 'United Kingdom', 'United States', 'Netherlands']
 
 app = Flask(__name__)
 
@@ -132,13 +135,16 @@ def fetch_timeseries_data():
         country_data = {}
         date_labels = None
         
-        # Map display names to Google Trends geo codes
+        # Map display names to Google Trends geo codes - UPDATED WITH UK, US, NL
         country_geo_map = {
             'France': 'FR',
             'Belgium': 'BE', 
             'Malaysia': 'MY',
             'United Arab Emirates': 'AE',
-            'Germany': 'DE'
+            'Germany': 'DE',
+            'United Kingdom': 'GB',
+            'United States': 'US',
+            'Netherlands': 'NL'
         }
         
         # ============== CHANGED: Dynamic timeframe from Jan 2025 to current date ==============
@@ -355,14 +361,17 @@ def get_fallback_timeseries():
         else:
             start_date = start_date.replace(month=start_date.month + 1)
     
-    # Generate sample data for each month (increasing trend)
+    # Generate sample data for each month (increasing trend) - UPDATED WITH UK, US, NL
     num_months = len(dates)
     base_values = {
         "Belgium": 45,
         "France": 35,
         "Germany": 40,
         "Malaysia": 25,
-        "United Arab Emirates": 20
+        "United Arab Emirates": 20,
+        "United Kingdom": 50,
+        "United States": 55,
+        "Netherlands": 42
     }
     
     series_data = {}
