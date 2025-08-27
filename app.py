@@ -1,4 +1,4 @@
-# app.py - Monthly trends version for better stability
+# app.py - Monthly trends version for better stability with 8 countries
 from pytrends.request import TrendReq
 import pandas as pd
 from pandas.tseries import offsets as pd_offsets
@@ -12,23 +12,23 @@ from datetime import datetime, timedelta
 # Primary keywords (original)
 KEYWORDS_PRIMARY = ['e-invoicing', 'PEPPOL']
 
-# Additional broader keywords for better search volume
-KEYWORDS_BROAD = ['electronic invoice', 'digital invoice', 'invoice automation']
+# Reduced keywords for leaderboard (faster API calls)
+KEYWORDS = KEYWORDS_PRIMARY  # Use only 2 keywords for speed
 
-# Combine for leaderboard (more keywords = more volume)
-KEYWORDS = KEYWORDS_PRIMARY + KEYWORDS_BROAD
+# Additional broader keywords (saved for future use)
+KEYWORDS_BROAD = ['electronic invoice', 'digital invoice', 'invoice automation']
 
 # Localized keywords by country for time series (better local relevance)
 LOCALIZED_KEYWORDS = {
     'FR': ['facture électronique', 'facturation electronique', 'e-invoicing'],
-    'DE': ['e-rechnung', 'elektronische rechnung', 'e-invoicing'],
-    'MY': ['e-invois', 'e-invoice', 'e-invoicing'],
     'BE': ['e-facturatie', 'e-invoicing', 'PEPPOL'],  
-    'AE': ['e-invoicing', 'electronic invoice', 'VAT invoice UAE']  # Added UAE-specific
+    'AE': ['e-invoicing', 'electronic invoice', 'VAT invoice UAE'],
+    'GB': ['e-invoicing', 'electronic invoice', 'PEPPOL UK'],  # UK
+    'US': ['e-invoicing', 'electronic invoice', 'invoice automation']  # US
 }
 
-# Countries for time series analysis
-TRACKED_COUNTRIES = ['France', 'Belgium', 'Malaysia', 'United Arab Emirates', 'Germany']
+# Countries for time series analysis (5 countries)
+TRACKED_COUNTRIES = ['France', 'Belgium', 'United Arab Emirates', 'United Kingdom', 'United States']
 
 app = Flask(__name__)
 
@@ -51,14 +51,14 @@ def fetch_fresh_data():
         for i, keyword in enumerate(KEYWORDS):
             print(f"Processing keyword {i+1}: {keyword}")
             
-            # Add delay between requests
+            # Add delay between requests (reduced for speed)
             if i > 0:
-                delay = random.uniform(5, 8)
+                delay = random.uniform(3, 5)  # Faster delays
                 print(f"Waiting {delay:.1f} seconds...")
                 time.sleep(delay)
             
             try:
-                pytrends.build_payload([keyword], timeframe='today 3-m')
+                pytrends.build_payload([keyword], timeframe='today 1-m')  # Shorter timeframe for speed
                 region_data = pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=True)
                 
                 if not region_data.empty:
@@ -71,8 +71,8 @@ def fetch_fresh_data():
             except Exception as e:
                 print(f"Error with keyword {keyword}: {e}")
                 if "429" in str(e):
-                    print("Rate limited - waiting 30 seconds...")
-                    time.sleep(30)
+                    print("Rate limited - waiting 20 seconds...")
+                    time.sleep(20)  # Reduced wait time
                 continue
 
         if all_data:
@@ -132,13 +132,13 @@ def fetch_timeseries_data():
         country_data = {}
         date_labels = None
         
-        # Map display names to Google Trends geo codes
+        # Map display names to Google Trends geo codes (5 countries: FR, BE, AE, GB, US)
         country_geo_map = {
             'France': 'FR',
             'Belgium': 'BE', 
-            'Malaysia': 'MY',
             'United Arab Emirates': 'AE',
-            'Germany': 'DE'
+            'United Kingdom': 'GB',
+            'United States': 'US'
         }
         
         # ============== CHANGED: Dynamic timeframe from Jan 2025 to current date ==============
@@ -201,19 +201,18 @@ def fetch_timeseries_data():
                     if date_labels is None:
                         # ============== CHANGED: Format as month names ==============
                         date_labels = [date.strftime('%b') for date in monthly_data.index]
-
                         print(f"Generated {len(date_labels)} month labels: {date_labels}")
                 else:
                     print(f"No time series data for {country}")
                 
-                # Add delay between countries
+                # Add delay between countries (adjusted for 6 countries)
                 time.sleep(random.uniform(4, 6))
                 
             except Exception as e:
                 print(f"Error fetching time series for {country}: {e}")
                 if "429" in str(e):
-                    print("Rate limited - waiting 30 seconds...")
-                    time.sleep(30)
+                    print("Rate limited - waiting 45 seconds...")
+                    time.sleep(45)
                 continue
         
         if country_data and date_labels:
@@ -233,6 +232,7 @@ def fetch_timeseries_data():
                     "start": "January 2025",
                     "end": current_month_year,
                     "data_points": len(date_labels),
+                    "countries": len(country_data),
                     "last_updated": datetime.now().isoformat()
                 }
             }
@@ -256,14 +256,14 @@ def get_fallback_data():
         "items": [
             {"label": "Belgium", "value": 202},
             {"label": "Luxembourg", "value": 150},
-            {"label": "Netherlands", "value": 93},
-            {"label": "Germany", "value": 85},
+            {"label": "Netherlands", "value": 125},
+            {"label": "United Kingdom", "value": 110},
+            {"label": "Germany", "value": 95},
+            {"label": "United States", "value": 85},
             {"label": "France", "value": 72},
             {"label": "Sweden", "value": 65},
             {"label": "Norway", "value": 58},
-            {"label": "Denmark", "value": 45},
-            {"label": "Finland", "value": 42},
-            {"label": "Austria", "value": 38}
+            {"label": "Denmark", "value": 45}
         ]
     }
 
@@ -341,29 +341,28 @@ def serve_timeseries():
     return response
 
 def get_fallback_timeseries():
-    """Return fallback MONTHLY time series data (Jan 2025 to current month)"""
-    # ============== CHANGED: Dynamic monthly fallback data ==============
+    """Return fallback MONTHLY time series data for 5 countries (Jan 2025 to current month)"""
     # Generate month labels from January 2025 to current month
     current_date = datetime.now()
     dates = []
     start_date = datetime(2025, 1, 1)
     
     while start_date <= current_date:
-        dates.append(start_date.strftime('%B %Y'))
+        dates.append(start_date.strftime('%b'))
         # Move to next month
         if start_date.month == 12:
             start_date = start_date.replace(year=start_date.year + 1, month=1)
         else:
             start_date = start_date.replace(month=start_date.month + 1)
     
-    # Generate sample data for each month (increasing trend)
+    # Generate sample data for each month (increasing trend) for 5 countries
     num_months = len(dates)
     base_values = {
         "Belgium": 45,
         "France": 35,
-        "Germany": 40,
-        "Malaysia": 25,
-        "United Arab Emirates": 20
+        "United Arab Emirates": 20,
+        "United Kingdom": 38,
+        "United States": 42
     }
     
     series_data = {}
@@ -383,6 +382,7 @@ def get_fallback_timeseries():
             "start": "January 2025",
             "end": current_date.strftime('%B %Y'),
             "data_points": num_months,
+            "countries": len(series_data),
             "note": "Fallback data - Google Trends unavailable"
         }
     }
@@ -411,8 +411,9 @@ def status():
         "timeseries_cache_timestamp": timeseries_cache_timestamp.isoformat() if timeseries_cache_timestamp else None,
         "timeseries_hours_since_update": (datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600 if timeseries_cache_timestamp else None,
         
-        # Tracked countries
+        # Tracked countries (now 8)
         "tracked_countries": TRACKED_COUNTRIES,
+        "total_tracked_countries": len(TRACKED_COUNTRIES),
         
         # Keywords being used
         "keywords_leaderboard": KEYWORDS,
@@ -440,10 +441,10 @@ def refresh_data():
 
 @app.route("/refresh-timeseries")
 def refresh_timeseries():
-    """Force refresh monthly time series data"""
+    """Force refresh monthly time series data for 5 countries"""
     global cached_timeseries, timeseries_cache_timestamp
     
-    print("Force monthly time series refresh requested")
+    print("Force monthly time series refresh requested (5 countries)")
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
@@ -454,7 +455,8 @@ def refresh_timeseries():
             "message": "Monthly time series refreshed successfully", 
             "countries": len(fresh_data["series"]),
             "months": len(fresh_data["dates"]),
-            "period": f"January 2025 - {current_month_year}"
+            "period": f"January 2025 - {current_month_year}",
+            "total_countries": len(TRACKED_COUNTRIES)
         })
     else:
         return jsonify({
