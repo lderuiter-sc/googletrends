@@ -1,4 +1,4 @@
-# app.py - 5 countries with improved rate limiting handling
+# app.py - Restored normal functionality after rate limiting cooldown
 from pytrends.request import TrendReq
 import pandas as pd
 from pandas.tseries import offsets as pd_offsets
@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 # ============== KEYWORDS ==============
 KEYWORDS_PRIMARY = ['e-invoicing', 'PEPPOL']
-KEYWORDS = KEYWORDS_PRIMARY  # Use only 2 keywords for speed
+KEYWORDS = KEYWORDS_PRIMARY  # Use 2 keywords for optimal speed/data balance
 
 # Localized keywords by country for time series
 LOCALIZED_KEYWORDS = {
@@ -21,43 +21,24 @@ LOCALIZED_KEYWORDS = {
     'US': ['e-invoicing', 'electronic invoice', 'invoice automation']
 }
 
-# Countries for time series analysis (5 countries)
+# Countries for time series analysis (5 countries as requested)
 TRACKED_COUNTRIES = ['France', 'Belgium', 'United Arab Emirates', 'United Kingdom', 'United States']
 
 app = Flask(__name__)
 
-# Cache variables
+# Cache variables (restored to normal durations)
 cached_data = None
 cache_timestamp = None
 cache_duration_hours = 6
 
 cached_timeseries = None
 timeseries_cache_timestamp = None
-
-def is_heavily_rate_limited():
-    """Check if we're experiencing heavy rate limiting"""
-    # Create a simple test to see if we're heavily rate limited
-    try:
-        pytrends = TrendReq(hl='en-US', tz=360, timeout=(5, 10))
-        pytrends.build_payload(['test'], timeframe='today 1-m', geo='US')
-        pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=False)
-        return False  # Success means we're not heavily rate limited
-    except Exception as e:
-        if "429" in str(e):
-            print("Detected heavy rate limiting - switching to fallback mode")
-            return True
-        return False
+timeseries_cache_hours = 12
 
 def fetch_fresh_data():
-    """Fetch fresh data from Google Trends with improved error handling"""
+    """Fetch fresh leaderboard data from Google Trends (3 months, excluding small countries)"""
     try:
-        print("Fetching fresh Google Trends data...")
-        
-        # Quick rate limit check
-        if is_heavily_rate_limited():
-            print("Heavy rate limiting detected - skipping API calls")
-            return None
-            
+        print("Fetching fresh Google Trends leaderboard data (3 months)...")
         pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         all_data = []
         consecutive_failures = 0
@@ -67,12 +48,13 @@ def fetch_fresh_data():
             
             # Add delay between requests
             if i > 0:
-                delay = random.uniform(3, 5)
+                delay = random.uniform(4, 6)
                 print(f"Waiting {delay:.1f} seconds...")
                 time.sleep(delay)
             
             try:
-                pytrends.build_payload([keyword], timeframe='today 1-m')
+                # Use 3-month timeframe for leaderboard
+                pytrends.build_payload([keyword], timeframe='today 3-m')
                 region_data = pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=True)
                 
                 if not region_data.empty:
@@ -89,12 +71,12 @@ def fetch_fresh_data():
                 
                 # If we get too many consecutive failures, bail out
                 if consecutive_failures >= 2:
-                    print("Too many consecutive failures - stopping to avoid infinite loop")
+                    print("Too many consecutive failures - stopping to avoid issues")
                     break
                     
                 if "429" in str(e):
-                    print("Rate limited - waiting 20 seconds...")
-                    time.sleep(20)
+                    print("Rate limited - waiting 30 seconds...")
+                    time.sleep(30)
                 continue
 
         if all_data:
@@ -103,20 +85,25 @@ def fetch_fresh_data():
             df_grouped = df.groupby('country').agg({'interest': 'sum'}).reset_index()
             df_grouped = df_grouped[df_grouped['interest'] > 0].sort_values('interest', ascending=False)
 
-            # Filter out small countries/territories
+            # Exclude small countries/territories that cause misleading results
             EXCLUDED_COUNTRIES = [
+                # Very small island nations and territories (population < 200k)
                 'Palau', 'Grenada', 'St. Pierre & Miquelon', 'Mayotte', 'St. Helena', 
                 'Wallis & Futuna', 'Faroe Islands', 'San Marino', 'Liechtenstein',
                 'Andorra', 'Monaco', 'Nauru', 'Tuvalu', 'Vatican City', 'Marshall Islands',
                 'Micronesia', 'Kiribati', 'Samoa', 'Tonga', 'Dominica', 'St. Lucia',
                 'Barbados', 'St. Vincent & Grenadines', 'Antigua & Barbuda', 'Seychelles',
-                'Maldives', 'Guam', 'American Samoa', 'Northern Mariana Islands', 
-                'U.S. Virgin Islands', 'British Virgin Islands', 'Cayman Islands', 
-                'Turks & Caicos Islands', 'Bermuda', 'Anguilla', 'Montserrat', 
-                'Falkland Islands', 'Greenland', 'French Polynesia', 'New Caledonia', 
-                'French Guiana', 'Martinique', 'Guadeloupe', 'Réunion', 'Gibraltar', 
-                'Isle of Man', 'Jersey', 'Guernsey', 'Djibouti', 'Comoros', 
-                'São Tomé & Príncipe', 'Guinea-Bissau'
+                'Maldives', 
+                
+                # Territories and dependencies (not sovereign business markets)
+                'Guam', 'American Samoa', 'Northern Mariana Islands', 'U.S. Virgin Islands',
+                'British Virgin Islands', 'Cayman Islands', 'Turks & Caicos Islands',
+                'Bermuda', 'Anguilla', 'Montserrat', 'Falkland Islands', 'Greenland',
+                'French Polynesia', 'New Caledonia', 'French Guiana', 'Martinique',
+                'Guadeloupe', 'Réunion', 'Gibraltar', 'Isle of Man', 'Jersey', 'Guernsey',
+                
+                # Very small nations unlikely to have significant B2B e-invoicing activity
+                'Djibouti', 'Comoros', 'São Tomé & Príncipe', 'Guinea-Bissau'
             ]
             
             df_filtered = df_grouped[~df_grouped['country'].isin(EXCLUDED_COUNTRIES)]
@@ -128,26 +115,20 @@ def fetch_fresh_data():
                     for _, row in df_filtered.head(10).iterrows()
                 ]
             }
-            print(f"Successfully processed {len(result['items'])} items")
+            print(f"Successfully processed {len(result['items'])} leaderboard items")
             return result
         else:
-            print("No data collected from Google Trends")
+            print("No leaderboard data collected from Google Trends")
             return None
             
     except Exception as e:
-        print(f"Error fetching data: {e}")
+        print(f"Error fetching leaderboard data: {e}")
         return None
 
 def fetch_timeseries_data():
-    """Fetch time series data with improved rate limiting handling"""
+    """Fetch monthly time series data for 5 specific countries (France, Belgium, UAE, UK, US)"""
     try:
-        print("Fetching monthly time series data...")
-        
-        # Quick rate limit check before starting expensive operation
-        if is_heavily_rate_limited():
-            print("Heavy rate limiting detected - skipping time series fetch")
-            return None
-            
+        print("Fetching monthly time series data for 5 countries...")
         pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         country_data = {}
         date_labels = None
@@ -160,6 +141,7 @@ def fetch_timeseries_data():
             'United States': 'US'
         }
         
+        # Dynamic timeframe from January 2025 to present
         today = datetime.now().strftime('%Y-%m-%d')
         timeframe = f'2025-01-01 {today}'
         print(f"Using timeframe: {timeframe}")
@@ -174,7 +156,7 @@ def fetch_timeseries_data():
                 print(f"No geo code found for {country}")
                 continue
             
-            # Use localized keywords if available
+            # Use localized keywords for better relevance
             keywords_to_use = LOCALIZED_KEYWORDS.get(geo_code, KEYWORDS_PRIMARY)
             print(f"Using keywords for {country}: {keywords_to_use}")
                 
@@ -183,14 +165,16 @@ def fetch_timeseries_data():
                 time_data = pytrends.interest_over_time()
                 
                 if not time_data.empty and len(time_data) > 0:
-                    print(f"Raw data shape: {time_data.shape}")
+                    print(f"Raw data shape for {country}: {time_data.shape}")
+                    print(f"Date range: {time_data.index[0]} to {time_data.index[-1]}")
                     
+                    # Sum all keywords for each time point
                     keyword_cols = [col for col in time_data.columns if col in keywords_to_use]
                     if keyword_cols:
                         time_data['total'] = time_data[keyword_cols].sum(axis=1)
-                        print(f"Created total column with keywords: {keyword_cols}")
+                        print(f"Created total column for {country} with keywords: {keyword_cols}")
                     else:
-                        print(f"No keyword columns found.")
+                        print(f"No keyword columns found for {country}")
                         consecutive_failures += 1
                         continue
                     
@@ -198,7 +182,7 @@ def fetch_timeseries_data():
                     time_data.index = pd.to_datetime(time_data.index)
                     monthly_data = time_data['total'].resample('M').mean().round(0)
                     
-                    # Ensure all months from Jan to current month
+                    # Ensure we have data for all months from Jan to current month
                     current_date = datetime.now()
                     end_of_current_month = pd.Timestamp(current_date.year, current_date.month, 1) + pd_offsets.MonthEnd(0)
                     all_months = pd.date_range(start='2025-01-01', end=end_of_current_month, freq='M')
@@ -207,6 +191,7 @@ def fetch_timeseries_data():
                     country_data[country] = monthly_data.tolist()
                     print(f"Added {len(monthly_data)} monthly data points for {country}")
                     
+                    # Store date labels from first successful country
                     if date_labels is None:
                         date_labels = [date.strftime('%b') for date in monthly_data.index]
                         print(f"Generated {len(date_labels)} month labels: {date_labels}")
@@ -216,26 +201,26 @@ def fetch_timeseries_data():
                     print(f"No time series data for {country}")
                     consecutive_failures += 1
                 
-                # If too many consecutive failures, stop to avoid infinite loop
+                # Stop if too many consecutive failures
                 if consecutive_failures >= 3:
                     print("Too many consecutive failures - stopping time series fetch")
                     break
                 
                 # Add delay between countries
-                time.sleep(random.uniform(4, 6))
+                time.sleep(random.uniform(5, 8))
                 
             except Exception as e:
                 consecutive_failures += 1
                 print(f"Error fetching time series for {country}: {e}")
                 
-                # Stop if too many failures
+                # Stop if too many failures to avoid infinite loops
                 if consecutive_failures >= 3:
                     print("Too many consecutive failures - stopping to avoid infinite loop")
                     break
                     
                 if "429" in str(e):
-                    print("Rate limited - waiting 30 seconds...")
-                    time.sleep(30)
+                    print("Rate limited - waiting 45 seconds...")
+                    time.sleep(45)
                 continue
         
         if country_data and date_labels:
@@ -267,10 +252,12 @@ def fetch_timeseries_data():
         
     except Exception as e:
         print(f"Error fetching time series data: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def get_fallback_data():
-    """Return fallback data when fresh data isn't available"""
+    """Return fallback leaderboard data when fresh data isn't available"""
     return {
         "items": [
             {"label": "Belgium", "value": 202},
@@ -287,7 +274,7 @@ def get_fallback_data():
     }
 
 def get_fallback_timeseries():
-    """Return fallback time series data for 5 countries"""
+    """Return fallback time series data for the 5 tracked countries"""
     current_date = datetime.now()
     dates = []
     start_date = datetime(2025, 1, 1)
@@ -325,18 +312,18 @@ def get_fallback_timeseries():
             "end": current_date.strftime('%B %Y'),
             "data_points": num_months,
             "countries": len(series_data),
-            "note": "Fallback data - Google Trends unavailable"
+            "note": "Fallback data - Google Trends temporarily unavailable"
         }
     }
 
 @app.route("/")
 def serve_data():
-    """Serve leaderboard data with caching"""
+    """Serve leaderboard data (3-month timeframe, excluding small countries)"""
     global cached_data, cache_timestamp
     
     now = datetime.now()
     
-    # Check if cache is valid
+    # Check if cache is valid (6-hour cache)
     cache_valid = (cached_data is not None and 
                    cache_timestamp is not None and 
                    now - cache_timestamp < timedelta(hours=cache_duration_hours))
@@ -347,8 +334,8 @@ def serve_data():
         response.headers['Content-Type'] = 'application/json'
         return response
     
-    # Try to fetch fresh data
-    print("Cache expired - attempting to fetch fresh leaderboard data...")
+    # Cache expired - try to fetch fresh data
+    print("Leaderboard cache expired - fetching fresh data...")
     fresh_data = fetch_fresh_data()
     
     if fresh_data:
@@ -357,7 +344,7 @@ def serve_data():
         print("Serving fresh leaderboard data")
         response = jsonify(cached_data)
     else:
-        print("Failed to get fresh data - serving fallback")
+        print("Failed to get fresh leaderboard data - serving fallback")
         response = jsonify(get_fallback_data())
     
     response.headers['Content-Type'] = 'application/json'
@@ -365,15 +352,15 @@ def serve_data():
 
 @app.route("/timeseries")
 def serve_timeseries():
-    """Serve time series data with improved error handling"""
+    """Serve time series data for 5 countries (France, Belgium, UAE, UK, US)"""
     global cached_timeseries, timeseries_cache_timestamp
     
     now = datetime.now()
     
-    # Check cache validity (extended to 24 hours due to rate limiting issues)
+    # Check cache validity (12-hour cache for time series)
     cache_valid = (cached_timeseries is not None and 
                    timeseries_cache_timestamp is not None and 
-                   now - timeseries_cache_timestamp < timedelta(hours=24))
+                   now - timeseries_cache_timestamp < timedelta(hours=timeseries_cache_hours))
     
     if cache_valid:
         print("Serving cached time series data")
@@ -381,8 +368,8 @@ def serve_timeseries():
         response.headers['Content-Type'] = 'application/json'
         return response
     
-    # Try to fetch fresh data (but fail fast to avoid infinite loops)
-    print("Time series cache expired - attempting quick fetch...")
+    # Cache expired - try to fetch fresh data
+    print("Time series cache expired - fetching fresh data...")
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
@@ -391,7 +378,7 @@ def serve_timeseries():
         print("Serving fresh time series data")
         response = jsonify(cached_timeseries)
     else:
-        print("Using fallback time series data due to API issues")
+        print("Failed to get fresh time series data - serving fallback")
         response = jsonify(get_fallback_timeseries())
     
     response.headers['Content-Type'] = 'application/json'
@@ -404,35 +391,40 @@ def health_check():
 
 @app.route("/status")
 def status():
-    """Enhanced status endpoint"""
+    """Status endpoint with system information"""
     global cached_data, cache_timestamp, cached_timeseries, timeseries_cache_timestamp
     
     current_month_year = datetime.now().strftime('%B %Y')
-    rate_limited = is_heavily_rate_limited()
     
     return jsonify({
-        # System status
-        "service_status": "healthy",
-        "google_trends_available": not rate_limited,
-        "rate_limited": rate_limited,
+        # Service status
+        "service_status": "operational",
+        "current_time": datetime.now().isoformat(),
         
         # Leaderboard cache info
-        "cached_data_exists": cached_data is not None,
-        "cache_timestamp": cache_timestamp.isoformat() if cache_timestamp else None,
-        "hours_since_update": (datetime.now() - cache_timestamp).total_seconds() / 3600 if cache_timestamp else None,
-        "cache_duration_hours": cache_duration_hours,
+        "leaderboard": {
+            "cached_data_exists": cached_data is not None,
+            "cache_timestamp": cache_timestamp.isoformat() if cache_timestamp else None,
+            "hours_since_update": (datetime.now() - cache_timestamp).total_seconds() / 3600 if cache_timestamp else None,
+            "cache_duration_hours": cache_duration_hours,
+            "timeframe": "3 months",
+            "excludes_small_countries": True
+        },
         
         # Time series cache info
-        "timeseries_cached": cached_timeseries is not None,
-        "timeseries_cache_timestamp": timeseries_cache_timestamp.isoformat() if timeseries_cache_timestamp else None,
-        "timeseries_hours_since_update": (datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600 if timeseries_cache_timestamp else None,
+        "timeseries": {
+            "cached_data_exists": cached_timeseries is not None,
+            "cache_timestamp": timeseries_cache_timestamp.isoformat() if timeseries_cache_timestamp else None,
+            "hours_since_update": (datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600 if timeseries_cache_timestamp else None,
+            "cache_duration_hours": timeseries_cache_hours,
+            "tracked_countries": TRACKED_COUNTRIES,
+            "period": "monthly",
+            "range": f"January 2025 - {current_month_year}"
+        },
         
         # Configuration
-        "tracked_countries": TRACKED_COUNTRIES,
-        "total_tracked_countries": len(TRACKED_COUNTRIES),
         "keywords": KEYWORDS,
-        "timeseries_period": "monthly",
-        "timeseries_range": f"January 2025 - {current_month_year}"
+        "localized_keywords": LOCALIZED_KEYWORDS
     })
 
 @app.route("/refresh")
@@ -441,15 +433,6 @@ def refresh_data():
     global cached_data, cache_timestamp
     
     print("Manual leaderboard refresh requested")
-    
-    # Check rate limiting first
-    if is_heavily_rate_limited():
-        return jsonify({
-            "message": "Cannot refresh - Google Trends is heavily rate limiting", 
-            "suggestion": "Please wait a few hours and try again",
-            "status": "rate_limited"
-        }), 429
-    
     fresh_data = fetch_fresh_data()
     
     if fresh_data:
@@ -457,29 +440,22 @@ def refresh_data():
         cache_timestamp = datetime.now()
         return jsonify({
             "message": "Leaderboard data refreshed successfully", 
-            "items": len(cached_data["items"])
+            "items": len(cached_data["items"]),
+            "timeframe": "3 months",
+            "timestamp": datetime.now().isoformat()
         })
     else:
         return jsonify({
-            "message": "Failed to refresh data", 
+            "message": "Failed to refresh leaderboard data", 
             "error": "Could not fetch from Google Trends"
         }), 500
 
 @app.route("/refresh-timeseries")
 def refresh_timeseries():
-    """Force refresh time series data with safety checks"""
+    """Force refresh time series data for the 5 tracked countries"""
     global cached_timeseries, timeseries_cache_timestamp
     
     print("Manual time series refresh requested")
-    
-    # Check rate limiting first
-    if is_heavily_rate_limited():
-        return jsonify({
-            "message": "Cannot refresh time series - Google Trends is heavily rate limiting", 
-            "suggestion": "Please wait a few hours and try again",
-            "status": "rate_limited"
-        }), 429
-    
     fresh_data = fetch_timeseries_data()
     
     if fresh_data:
@@ -489,12 +465,13 @@ def refresh_timeseries():
             "message": "Time series refreshed successfully", 
             "countries": len(fresh_data["series"]),
             "months": len(fresh_data["dates"]),
-            "period": f"January 2025 - {datetime.now().strftime('%B %Y')}"
+            "period": f"January 2025 - {datetime.now().strftime('%B %Y')}",
+            "timestamp": datetime.now().isoformat()
         })
     else:
         return jsonify({
             "message": "Failed to refresh time series", 
-            "error": "Could not fetch from Google Trends - using fallback data"
+            "error": "Could not fetch from Google Trends"
         }), 500
 
 if __name__ == "__main__":
