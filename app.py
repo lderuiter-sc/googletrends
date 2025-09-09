@@ -318,69 +318,41 @@ def get_fallback_timeseries():
 
 @app.route("/")
 def serve_data():
-    """Serve leaderboard data (3-month timeframe, excluding small countries)"""
+    """Serve leaderboard data instantly (cached data only)"""
     global cached_data, cache_timestamp
     
-    now = datetime.now()
+    print("Leaderboard endpoint called")
     
-    # Check if cache is valid (6-hour cache)
-    cache_valid = (cached_data is not None and 
-                   cache_timestamp is not None and 
-                   now - cache_timestamp < timedelta(hours=cache_duration_hours))
-    
-    if cache_valid:
+    # Always serve cached data if available, never fetch during request
+    if cached_data is not None:
         print("Serving cached leaderboard data")
         response = jsonify(cached_data)
         response.headers['Content-Type'] = 'application/json'
         return response
     
-    # Cache expired - try to fetch fresh data
-    print("Leaderboard cache expired - fetching fresh data...")
-    fresh_data = fetch_fresh_data()
-    
-    if fresh_data:
-        cached_data = fresh_data
-        cache_timestamp = now
-        print("Serving fresh leaderboard data")
-        response = jsonify(cached_data)
-    else:
-        print("Failed to get fresh leaderboard data - serving fallback")
-        response = jsonify(get_fallback_data())
-    
+    # If no cached data exists, serve fallback immediately
+    print("No cached data - serving fallback leaderboard data")
+    response = jsonify(get_fallback_data())
     response.headers['Content-Type'] = 'application/json'
     return response
 
 @app.route("/timeseries")
 def serve_timeseries():
-    """Serve time series data for 5 countries (France, Belgium, UAE, UK, US)"""
+    """Serve time series data instantly (cached data only)"""
     global cached_timeseries, timeseries_cache_timestamp
     
-    now = datetime.now()
+    print("Time series endpoint called")
     
-    # Check cache validity (12-hour cache for time series)
-    cache_valid = (cached_timeseries is not None and 
-                   timeseries_cache_timestamp is not None and 
-                   now - timeseries_cache_timestamp < timedelta(hours=timeseries_cache_hours))
-    
-    if cache_valid:
+    # Always serve cached data if available, never fetch during request
+    if cached_timeseries is not None:
         print("Serving cached time series data")
         response = jsonify(cached_timeseries)
         response.headers['Content-Type'] = 'application/json'
         return response
     
-    # Cache expired - try to fetch fresh data
-    print("Time series cache expired - fetching fresh data...")
-    fresh_data = fetch_timeseries_data()
-    
-    if fresh_data:
-        cached_timeseries = fresh_data
-        timeseries_cache_timestamp = now
-        print("Serving fresh time series data")
-        response = jsonify(cached_timeseries)
-    else:
-        print("Failed to get fresh time series data - serving fallback")
-        response = jsonify(get_fallback_timeseries())
-    
+    # If no cached data exists, serve fallback immediately
+    print("No cached data - serving fallback time series data")
+    response = jsonify(get_fallback_timeseries())
     response.headers['Content-Type'] = 'application/json'
     return response
 
