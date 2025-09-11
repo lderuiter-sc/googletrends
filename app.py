@@ -1,4 +1,4 @@
-# app.py - Anti-429 version with session management and human-like behavior
+# app.py - 5 countries with improved rate limiting handling
 from pytrends.request import TrendReq
 import pandas as pd
 from pandas.tseries import offsets as pd_offsets
@@ -7,22 +7,12 @@ import time
 import random
 import os
 from datetime import datetime, timedelta
-import threading
-import schedule
-import logging
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# ============== CONFIGURATION ==============
+# ============== KEYWORDS ==============
 KEYWORDS_PRIMARY = ['e-invoicing', 'PEPPOL']
-KEYWORDS = KEYWORDS_PRIMARY
+KEYWORDS = KEYWORDS_PRIMARY  # Use only 2 keywords for speed
 
-# Localized keywords for better relevance
+# Localized keywords by country for time series
 LOCALIZED_KEYWORDS = {
     'FR': ['facture électronique', 'facturation electronique', 'e-invoicing'],
     'BE': ['e-facturatie', 'e-invoicing', 'PEPPOL'],  
@@ -31,118 +21,58 @@ LOCALIZED_KEYWORDS = {
     'US': ['e-invoicing', 'electronic invoice', 'invoice automation']
 }
 
-# Fixed 5 countries for time series
+# Countries for time series analysis (5 countries)
 TRACKED_COUNTRIES = ['France', 'Belgium', 'United Arab Emirates', 'United Kingdom', 'United States']
-
-# Small countries to exclude from leaderboard
-EXCLUDED_COUNTRIES = [
-    'Palau', 'Grenada', 'St. Pierre & Miquelon', 'Mayotte', 'St. Helena', 
-    'Wallis & Futuna', 'Faroe Islands', 'San Marino', 'Liechtenstein',
-    'Andorra', 'Monaco', 'Nauru', 'Tuvalu', 'Vatican City', 'Marshall Islands',
-    'Micronesia', 'Kiribati', 'Samoa', 'Tonga', 'Dominica', 'St. Lucia',
-    'Barbados', 'St. Vincent & Grenadines', 'Antigua & Barbuda', 'Seychelles',
-    'Maldives', 'Guam', 'American Samoa', 'Northern Mariana Islands', 
-    'U.S. Virgin Islands', 'British Virgin Islands', 'Cayman Islands', 
-    'Turks & Caicos Islands', 'Bermuda', 'Anguilla', 'Montserrat', 
-    'Falkland Islands', 'Greenland', 'French Polynesia', 'New Caledonia', 
-    'French Guiana', 'Martinique', 'Guadeloupe', 'Réunion', 'Gibraltar', 
-    'Isle of Man', 'Jersey', 'Guernsey', 'Djibouti', 'Comoros', 
-    'São Tomé & Príncipe', 'Guinea-Bissau'
-]
 
 app = Flask(__name__)
 
-# Global cache variables
+# Cache variables
 cached_data = None
 cache_timestamp = None
+cache_duration_hours = 6
+
 cached_timeseries = None
 timeseries_cache_timestamp = None
 
-# Background thread control
-background_thread = None
-stop_background = False
-
-# Track failures for exponential backoff
-consecutive_failures = 0
-last_failure_time = None
-
-def create_pytrends_session():
-    """Create a pytrends session with better retry logic and headers"""
-    # Create session with custom retry strategy
-    session = requests.Session()
-    
-    # More conservative retry strategy
-    retry_strategy = Retry(
-        total=2,
-        backoff_factor=2,
-        status_forcelist=[500, 502, 503, 504],
-    )
-    
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    
-    # Add more browser-like headers
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-    })
-    
-    return TrendReq(hl='en-US', tz=360, timeout=(30, 45), requests_args={'verify': True})
-
-def wait_with_backoff():
-    """Implement exponential backoff based on consecutive failures"""
-    global consecutive_failures, last_failure_time
-    
-    if consecutive_failures == 0:
-        return
-    
-    # Calculate wait time: 5 minutes * 2^failures (max 2 hours)
-    wait_minutes = min(5 * (2 ** consecutive_failures), 120)
-    wait_seconds = wait_minutes * 60
-    
-    logger.warning(f"Backing off for {wait_minutes} minutes due to {consecutive_failures} consecutive failures")
-    time.sleep(wait_seconds)
-
-def fetch_leaderboard_data():
-    """Fetch leaderboard data with aggressive anti-429 measures"""
-    global consecutive_failures, last_failure_time
-    
+def is_heavily_rate_limited():
+    """Check if we're experiencing heavy rate limiting"""
+    # Create a simple test to see if we're heavily rate limited
     try:
-        logger.info("Starting leaderboard data fetch...")
+        pytrends = TrendReq(hl='en-US', tz=360, timeout=(5, 10))
+        pytrends.build_payload(['test'], timeframe='today 1-m', geo='US')
+        pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=False)
+        return False  # Success means we're not heavily rate limited
+    except Exception as e:
+        if "429" in str(e):
+            print("Detected heavy rate limiting - switching to fallback mode")
+            return True
+        return False
+
+def fetch_fresh_data():
+    """Fetch fresh data from Google Trends with improved error handling"""
+    try:
+        print("Fetching fresh Google Trends data...")
         
-        # Wait if we've had recent failures
-        wait_with_backoff()
-        
-        # Initial delay to appear more human-like
-        initial_delay = random.uniform(30, 60)
-        logger.info(f"Initial delay of {initial_delay:.1f} seconds...")
-        time.sleep(initial_delay)
-        
-        pytrends = create_pytrends_session()
+        # Quick rate limit check
+        if is_heavily_rate_limited():
+            print("Heavy rate limiting detected - skipping API calls")
+            return None
+            
+        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         all_data = []
-        
+        consecutive_failures = 0
+
         for i, keyword in enumerate(KEYWORDS):
+            print(f"Processing keyword {i+1}: {keyword}")
+            
+            # Add delay between requests
             if i > 0:
-                # Much longer delay between keywords
-                delay = random.uniform(60, 90)
-                logger.info(f"Waiting {delay:.1f} seconds before next keyword...")
+                delay = random.uniform(3, 5)
+                print(f"Waiting {delay:.1f} seconds...")
                 time.sleep(delay)
             
             try:
-                logger.info(f"Fetching data for keyword: {keyword}")
-                
-                # Use shorter timeframe to reduce load
-                pytrends.build_payload([keyword], timeframe='today 1-m')  # Changed from 3-m to 1-m
-                
-                # Add delay after building payload
-                time.sleep(random.uniform(5, 10))
-                
+                pytrends.build_payload([keyword], timeframe='today 1-m')
                 region_data = pytrends.interest_by_region(resolution='COUNTRY', inc_low_vol=True)
                 
                 if not region_data.empty:
@@ -150,65 +80,75 @@ def fetch_leaderboard_data():
                     region_data = region_data[['geoName', keyword]]
                     region_data.columns = ['country', 'interest']
                     all_data.append(region_data)
-                    logger.info(f"Got {len(region_data)} countries for {keyword}")
-                    consecutive_failures = 0  # Reset on success
+                    print(f"Added {len(region_data)} rows for {keyword}")
+                    consecutive_failures = 0  # Reset failure counter
                     
             except Exception as e:
-                logger.error(f"Error with keyword {keyword}: {e}")
-                if "429" in str(e) or "too many" in str(e).lower():
-                    consecutive_failures += 1
-                    last_failure_time = datetime.now()
+                consecutive_failures += 1
+                print(f"Error with keyword {keyword}: {e}")
+                
+                # If we get too many consecutive failures, bail out
+                if consecutive_failures >= 2:
+                    print("Too many consecutive failures - stopping to avoid infinite loop")
+                    break
                     
-                    # Exponential backoff for 429 errors
-                    wait_time = min(300 * consecutive_failures, 3600)  # 5 min, 10 min, 15 min... max 1 hour
-                    logger.warning(f"Rate limited - waiting {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    return None  # Give up on this attempt
+                if "429" in str(e):
+                    print("Rate limited - waiting 20 seconds...")
+                    time.sleep(20)
                 continue
 
         if all_data:
+            # Process data
             df = pd.concat(all_data)
             df_grouped = df.groupby('country').agg({'interest': 'sum'}).reset_index()
             df_grouped = df_grouped[df_grouped['interest'] > 0].sort_values('interest', ascending=False)
-            df_filtered = df_grouped[~df_grouped['country'].isin(EXCLUDED_COUNTRIES)]
+
+            # Filter out small countries/territories
+            EXCLUDED_COUNTRIES = [
+                'Palau', 'Grenada', 'St. Pierre & Miquelon', 'Mayotte', 'St. Helena', 
+                'Wallis & Futuna', 'Faroe Islands', 'San Marino', 'Liechtenstein',
+                'Andorra', 'Monaco', 'Nauru', 'Tuvalu', 'Vatican City', 'Marshall Islands',
+                'Micronesia', 'Kiribati', 'Samoa', 'Tonga', 'Dominica', 'St. Lucia',
+                'Barbados', 'St. Vincent & Grenadines', 'Antigua & Barbuda', 'Seychelles',
+                'Maldives', 'Guam', 'American Samoa', 'Northern Mariana Islands', 
+                'U.S. Virgin Islands', 'British Virgin Islands', 'Cayman Islands', 
+                'Turks & Caicos Islands', 'Bermuda', 'Anguilla', 'Montserrat', 
+                'Falkland Islands', 'Greenland', 'French Polynesia', 'New Caledonia', 
+                'French Guiana', 'Martinique', 'Guadeloupe', 'Réunion', 'Gibraltar', 
+                'Isle of Man', 'Jersey', 'Guernsey', 'Djibouti', 'Comoros', 
+                'São Tomé & Príncipe', 'Guinea-Bissau'
+            ]
             
+            df_filtered = df_grouped[~df_grouped['country'].isin(EXCLUDED_COUNTRIES)]
+            print(f"Filtered out {len(df_grouped) - len(df_filtered)} small countries/territories")
+
             result = {
                 "items": [
                     {"label": row['country'], "value": int(row['interest'])}
                     for _, row in df_filtered.head(10).iterrows()
-                ],
-                "timestamp": datetime.now().isoformat(),
-                "success": True
+                ]
             }
-            logger.info(f"Successfully fetched leaderboard with {len(result['items'])} countries")
-            consecutive_failures = 0  # Reset on full success
+            print(f"Successfully processed {len(result['items'])} items")
             return result
-        
-        logger.warning("No leaderboard data collected")
-        return None
+        else:
+            print("No data collected from Google Trends")
+            return None
             
     except Exception as e:
-        logger.error(f"Failed to fetch leaderboard: {e}")
-        consecutive_failures += 1
-        last_failure_time = datetime.now()
+        print(f"Error fetching data: {e}")
         return None
 
 def fetch_timeseries_data():
-    """Fetch time series data with aggressive anti-429 measures"""
-    global consecutive_failures, last_failure_time
-    
+    """Fetch time series data with improved rate limiting handling"""
     try:
-        logger.info("Starting time series data fetch...")
+        print("Fetching monthly time series data...")
         
-        # Wait if we've had recent failures
-        wait_with_backoff()
-        
-        # Initial delay
-        initial_delay = random.uniform(30, 60)
-        logger.info(f"Initial delay of {initial_delay:.1f} seconds...")
-        time.sleep(initial_delay)
-        
-        pytrends = create_pytrends_session()
+        # Quick rate limit check before starting expensive operation
+        if is_heavily_rate_limited():
+            print("Heavy rate limiting detected - skipping time series fetch")
+            return None
+            
+        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         country_data = {}
         date_labels = None
         
@@ -220,60 +160,86 @@ def fetch_timeseries_data():
             'United States': 'US'
         }
         
-        # Use shorter timeframe - last 30 days only
-        today = datetime.now()
-        start_date = (today - timedelta(days=30)).strftime('%Y-%m-%d')
-        end_date = today.strftime('%Y-%m-%d')
-        timeframe = f'{start_date} {end_date}'
+        today = datetime.now().strftime('%Y-%m-%d')
+        timeframe = f'2025-01-01 {today}'
+        print(f"Using timeframe: {timeframe}")
         
-        for i, country in enumerate(TRACKED_COUNTRIES):
-            if i > 0:
-                # Very long delay between countries
-                delay = random.uniform(90, 120)
-                logger.info(f"Waiting {delay:.1f} seconds before next country...")
-                time.sleep(delay)
-            
+        consecutive_failures = 0
+        
+        for country in TRACKED_COUNTRIES:
+            print(f"Processing time series for {country}...")
             geo_code = country_geo_map.get(country, '')
+            
             if not geo_code:
+                print(f"No geo code found for {country}")
                 continue
             
-            # Only use one keyword per country to reduce requests
-            keywords_to_use = [LOCALIZED_KEYWORDS.get(geo_code, KEYWORDS_PRIMARY)[0]]
-            logger.info(f"Fetching {country} with keyword: {keywords_to_use[0]}")
+            # Use localized keywords if available
+            keywords_to_use = LOCALIZED_KEYWORDS.get(geo_code, KEYWORDS_PRIMARY)
+            print(f"Using keywords for {country}: {keywords_to_use}")
                 
             try:
                 pytrends.build_payload(keywords_to_use, timeframe=timeframe, geo=geo_code)
-                
-                # Add delay after building payload
-                time.sleep(random.uniform(5, 10))
-                
                 time_data = pytrends.interest_over_time()
                 
                 if not time_data.empty and len(time_data) > 0:
-                    # Use weekly data instead of daily
-                    time_data.index = pd.to_datetime(time_data.index)
-                    weekly_data = time_data[keywords_to_use[0]].resample('W').mean().round(0)
+                    print(f"Raw data shape: {time_data.shape}")
                     
-                    country_data[country] = weekly_data.tolist()
+                    keyword_cols = [col for col in time_data.columns if col in keywords_to_use]
+                    if keyword_cols:
+                        time_data['total'] = time_data[keyword_cols].sum(axis=1)
+                        print(f"Created total column with keywords: {keyword_cols}")
+                    else:
+                        print(f"No keyword columns found.")
+                        consecutive_failures += 1
+                        continue
+                    
+                    # Aggregate by month
+                    time_data.index = pd.to_datetime(time_data.index)
+                    monthly_data = time_data['total'].resample('M').mean().round(0)
+                    
+                    # Ensure all months from Jan to current month
+                    current_date = datetime.now()
+                    end_of_current_month = pd.Timestamp(current_date.year, current_date.month, 1) + pd_offsets.MonthEnd(0)
+                    all_months = pd.date_range(start='2025-01-01', end=end_of_current_month, freq='M')
+                    monthly_data = monthly_data.reindex(all_months, fill_value=0)
+                    
+                    country_data[country] = monthly_data.tolist()
+                    print(f"Added {len(monthly_data)} monthly data points for {country}")
                     
                     if date_labels is None:
-                        date_labels = [date.strftime('%m/%d') for date in weekly_data.index]
-                    
-                    logger.info(f"Got {len(weekly_data)} weeks for {country}")
-                    consecutive_failures = 0  # Reset on success
+                        date_labels = [date.strftime('%b') for date in monthly_data.index]
+                        print(f"Generated {len(date_labels)} month labels: {date_labels}")
+                        
+                    consecutive_failures = 0  # Reset failure counter
+                else:
+                    print(f"No time series data for {country}")
+                    consecutive_failures += 1
+                
+                # If too many consecutive failures, stop to avoid infinite loop
+                if consecutive_failures >= 3:
+                    print("Too many consecutive failures - stopping time series fetch")
+                    break
+                
+                # Add delay between countries
+                time.sleep(random.uniform(4, 6))
                 
             except Exception as e:
-                logger.error(f"Error fetching {country}: {e}")
-                if "429" in str(e) or "too many" in str(e).lower():
-                    consecutive_failures += 1
-                    last_failure_time = datetime.now()
+                consecutive_failures += 1
+                print(f"Error fetching time series for {country}: {e}")
+                
+                # Stop if too many failures
+                if consecutive_failures >= 3:
+                    print("Too many consecutive failures - stopping to avoid infinite loop")
+                    break
                     
-                    # Give up on time series for now
-                    logger.warning("Rate limited on time series - aborting")
-                    return None
+                if "429" in str(e):
+                    print("Rate limited - waiting 30 seconds...")
+                    time.sleep(30)
                 continue
         
         if country_data and date_labels:
+            current_month_year = datetime.now().strftime('%B %Y')
             result = {
                 "dates": date_labels,
                 "series": [
@@ -284,30 +250,30 @@ def fetch_timeseries_data():
                     for country, values in country_data.items()
                 ],
                 "metadata": {
-                    "period": "weekly",
-                    "timeframe": "Last 30 days",
+                    "period": "monthly",
+                    "start": "January 2025",
+                    "end": current_month_year,
+                    "data_points": len(date_labels),
+                    "countries": len(country_data),
                     "last_updated": datetime.now().isoformat()
-                },
-                "success": True
+                }
             }
-            logger.info(f"Successfully fetched time series for {len(country_data)} countries")
-            consecutive_failures = 0  # Reset on full success
+            
+            print(f"Successfully created time series with {len(date_labels)} months and {len(country_data)} countries")
             return result
         
-        logger.warning("No time series data collected")
+        print("No time series data collected")
         return None
         
     except Exception as e:
-        logger.error(f"Failed to fetch time series: {e}")
-        consecutive_failures += 1
-        last_failure_time = datetime.now()
+        print(f"Error fetching time series data: {e}")
         return None
 
-def get_fallback_leaderboard():
-    """Fallback data when API fails"""
+def get_fallback_data():
+    """Return fallback data when fresh data isn't available"""
     return {
         "items": [
-            {"label": "Belgium", "value": 200},
+            {"label": "Belgium", "value": 202},
             {"label": "United Kingdom", "value": 150},
             {"label": "United States", "value": 125},
             {"label": "France", "value": 95},
@@ -317,19 +283,23 @@ def get_fallback_leaderboard():
             {"label": "Sweden", "value": 58},
             {"label": "Norway", "value": 45},
             {"label": "Denmark", "value": 38}
-        ],
-        "timestamp": datetime.now().isoformat(),
-        "fallback": True
+        ]
     }
 
 def get_fallback_timeseries():
-    """Fallback time series data"""
-    # Generate weekly dates for last 30 days
+    """Return fallback time series data for 5 countries"""
+    current_date = datetime.now()
     dates = []
-    for i in range(4):
-        date = datetime.now() - timedelta(weeks=i)
-        dates.insert(0, date.strftime('%m/%d'))
+    start_date = datetime(2025, 1, 1)
     
+    while start_date <= current_date:
+        dates.append(start_date.strftime('%b'))
+        if start_date.month == 12:
+            start_date = start_date.replace(year=start_date.year + 1, month=1)
+        else:
+            start_date = start_date.replace(month=start_date.month + 1)
+    
+    num_months = len(dates)
     base_values = {
         "Belgium": 45,
         "France": 35,
@@ -338,154 +308,195 @@ def get_fallback_timeseries():
         "United States": 42
     }
     
+    series_data = {}
+    for country, base in base_values.items():
+        data = [base + (i * 3) + random.randint(-2, 2) for i in range(num_months)]
+        series_data[country] = data
+    
     return {
         "dates": dates,
         "series": [
-            {"name": country, "data": [base + random.randint(-5, 5) for _ in range(len(dates))]}
-            for country, base in base_values.items()
+            {"name": country, "data": data}
+            for country, data in series_data.items()
         ],
         "metadata": {
-            "period": "weekly",
-            "fallback": True,
-            "last_updated": datetime.now().isoformat()
+            "period": "monthly",
+            "start": "January 2025",
+            "end": current_date.strftime('%B %Y'),
+            "data_points": num_months,
+            "countries": len(series_data),
+            "note": "Fallback data - Google Trends unavailable"
         }
     }
 
-def update_cache_carefully():
-    """Update caches with careful timing to avoid 429s"""
-    global cached_data, cache_timestamp, cached_timeseries, timeseries_cache_timestamp
-    global consecutive_failures
-    
-    logger.info("=== Starting careful cache update ===")
-    
-    # If we've had many failures recently, skip this update
-    if consecutive_failures >= 3:
-        hours_since_failure = (datetime.now() - last_failure_time).total_seconds() / 3600 if last_failure_time else 24
-        if hours_since_failure < 6:
-            logger.warning(f"Skipping update - too many recent failures ({consecutive_failures})")
-            return
-    
-    # Try to update leaderboard
-    new_data = fetch_leaderboard_data()
-    if new_data and new_data.get('success'):
-        cached_data = new_data
-        cache_timestamp = datetime.now()
-        logger.info("✓ Leaderboard cache updated successfully")
-        
-        # Only try time series if leaderboard succeeded
-        # Wait a long time before trying time series
-        logger.info("Waiting 10 minutes before time series fetch...")
-        time.sleep(600)  # 10 minutes
-        
-        new_timeseries = fetch_timeseries_data()
-        if new_timeseries and new_timeseries.get('success'):
-            cached_timeseries = new_timeseries
-            timeseries_cache_timestamp = datetime.now()
-            logger.info("✓ Time series cache updated successfully")
-    else:
-        logger.warning("Failed to update leaderboard - skipping time series")
-    
-    logger.info("=== Cache update complete ===")
-
-def run_scheduler():
-    """Background thread that runs the scheduler"""
-    global stop_background, cached_data, cached_timeseries
-    
-    # Load with fallback data immediately
-    cached_data = get_fallback_leaderboard()
-    cached_timeseries = get_fallback_timeseries()
-    logger.info("Loaded with fallback data")
-    
-    # Wait before first real attempt
-    logger.info("Waiting 5 minutes before first fetch attempt...")
-    time.sleep(300)  # 5 minutes
-    
-    # Try initial fetch
-    update_cache_carefully()
-    
-    # Schedule updates only once per day at 3 AM UTC
-    schedule.every().day.at("03:00").do(update_cache_carefully)
-    logger.info("Scheduler started - will update once daily at 3 AM UTC")
-    
-    while not stop_background:
-        schedule.run_pending()
-        time.sleep(60)  # Check every minute
-
-# Flask Routes
 @app.route("/")
-def serve_leaderboard():
-    """Serve leaderboard data"""
-    global cached_data
+def serve_data():
+    """Serve leaderboard data with caching"""
+    global cached_data, cache_timestamp
     
-    if cached_data:
+    now = datetime.now()
+    
+    # Check if cache is valid
+    cache_valid = (cached_data is not None and 
+                   cache_timestamp is not None and 
+                   now - cache_timestamp < timedelta(hours=cache_duration_hours))
+    
+    if cache_valid:
+        print("Serving cached leaderboard data")
+        response = jsonify(cached_data)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    
+    # Try to fetch fresh data
+    print("Cache expired - attempting to fetch fresh leaderboard data...")
+    fresh_data = fetch_fresh_data()
+    
+    if fresh_data:
+        cached_data = fresh_data
+        cache_timestamp = now
+        print("Serving fresh leaderboard data")
         response = jsonify(cached_data)
     else:
-        response = jsonify(get_fallback_leaderboard())
+        print("Failed to get fresh data - serving fallback")
+        response = jsonify(get_fallback_data())
     
     response.headers['Content-Type'] = 'application/json'
-    response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
 @app.route("/timeseries")
 def serve_timeseries():
-    """Serve time series data"""
-    global cached_timeseries
+    """Serve time series data with improved error handling"""
+    global cached_timeseries, timeseries_cache_timestamp
     
-    if cached_timeseries:
+    now = datetime.now()
+    
+    # Check cache validity (extended to 24 hours due to rate limiting issues)
+    cache_valid = (cached_timeseries is not None and 
+                   timeseries_cache_timestamp is not None and 
+                   now - timeseries_cache_timestamp < timedelta(hours=24))
+    
+    if cache_valid:
+        print("Serving cached time series data")
+        response = jsonify(cached_timeseries)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    
+    # Try to fetch fresh data (but fail fast to avoid infinite loops)
+    print("Time series cache expired - attempting quick fetch...")
+    fresh_data = fetch_timeseries_data()
+    
+    if fresh_data:
+        cached_timeseries = fresh_data
+        timeseries_cache_timestamp = now
+        print("Serving fresh time series data")
         response = jsonify(cached_timeseries)
     else:
+        print("Using fallback time series data due to API issues")
         response = jsonify(get_fallback_timeseries())
     
     response.headers['Content-Type'] = 'application/json'
-    response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
 @app.route("/health")
 def health_check():
-    """Health check for Render"""
+    """Health check endpoint"""
     return "OK", 200
 
 @app.route("/status")
 def status():
-    """Detailed status information"""
+    """Enhanced status endpoint"""
     global cached_data, cache_timestamp, cached_timeseries, timeseries_cache_timestamp
-    global consecutive_failures, last_failure_time
+    
+    current_month_year = datetime.now().strftime('%B %Y')
+    rate_limited = is_heavily_rate_limited()
     
     return jsonify({
-        "status": "operational",
-        "current_time": datetime.now().isoformat(),
-        "consecutive_failures": consecutive_failures,
-        "last_failure": last_failure_time.isoformat() if last_failure_time else None,
-        "leaderboard": {
-            "has_data": cached_data is not None,
-            "is_fallback": cached_data.get('fallback', False) if cached_data else True,
-            "last_update": cache_timestamp.isoformat() if cache_timestamp else None,
-            "hours_old": round((datetime.now() - cache_timestamp).total_seconds() / 3600, 1) if cache_timestamp else None
-        },
-        "timeseries": {
-            "has_data": cached_timeseries is not None,
-            "is_fallback": cached_timeseries.get('fallback', False) if cached_timeseries else True,
-            "last_update": timeseries_cache_timestamp.isoformat() if timeseries_cache_timestamp else None,
-            "hours_old": round((datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600, 1) if timeseries_cache_timestamp else None,
-            "countries": TRACKED_COUNTRIES
-        },
-        "next_update": schedule.next_run().isoformat() if schedule.next_run() else None
+        # System status
+        "service_status": "healthy",
+        "google_trends_available": not rate_limited,
+        "rate_limited": rate_limited,
+        
+        # Leaderboard cache info
+        "cached_data_exists": cached_data is not None,
+        "cache_timestamp": cache_timestamp.isoformat() if cache_timestamp else None,
+        "hours_since_update": (datetime.now() - cache_timestamp).total_seconds() / 3600 if cache_timestamp else None,
+        "cache_duration_hours": cache_duration_hours,
+        
+        # Time series cache info
+        "timeseries_cached": cached_timeseries is not None,
+        "timeseries_cache_timestamp": timeseries_cache_timestamp.isoformat() if timeseries_cache_timestamp else None,
+        "timeseries_hours_since_update": (datetime.now() - timeseries_cache_timestamp).total_seconds() / 3600 if timeseries_cache_timestamp else None,
+        
+        # Configuration
+        "tracked_countries": TRACKED_COUNTRIES,
+        "total_tracked_countries": len(TRACKED_COUNTRIES),
+        "keywords": KEYWORDS,
+        "timeseries_period": "monthly",
+        "timeseries_range": f"January 2025 - {current_month_year}"
     })
 
-# Initialize background scheduler on startup
-def initialize():
-    """Initialize the app with background scheduler"""
-    global background_thread
+@app.route("/refresh")
+def refresh_data():
+    """Force refresh leaderboard data"""
+    global cached_data, cache_timestamp
     
-    if background_thread is None:
-        background_thread = threading.Thread(target=run_scheduler, daemon=True)
-        background_thread.start()
-        logger.info("Background scheduler thread started")
+    print("Manual leaderboard refresh requested")
+    
+    # Check rate limiting first
+    if is_heavily_rate_limited():
+        return jsonify({
+            "message": "Cannot refresh - Google Trends is heavily rate limiting", 
+            "suggestion": "Please wait a few hours and try again",
+            "status": "rate_limited"
+        }), 429
+    
+    fresh_data = fetch_fresh_data()
+    
+    if fresh_data:
+        cached_data = fresh_data
+        cache_timestamp = datetime.now()
+        return jsonify({
+            "message": "Leaderboard data refreshed successfully", 
+            "items": len(cached_data["items"])
+        })
+    else:
+        return jsonify({
+            "message": "Failed to refresh data", 
+            "error": "Could not fetch from Google Trends"
+        }), 500
 
-# Start the scheduler when module loads
-initialize()
+@app.route("/refresh-timeseries")
+def refresh_timeseries():
+    """Force refresh time series data with safety checks"""
+    global cached_timeseries, timeseries_cache_timestamp
+    
+    print("Manual time series refresh requested")
+    
+    # Check rate limiting first
+    if is_heavily_rate_limited():
+        return jsonify({
+            "message": "Cannot refresh time series - Google Trends is heavily rate limiting", 
+            "suggestion": "Please wait a few hours and try again",
+            "status": "rate_limited"
+        }), 429
+    
+    fresh_data = fetch_timeseries_data()
+    
+    if fresh_data:
+        cached_timeseries = fresh_data
+        timeseries_cache_timestamp = datetime.now()
+        return jsonify({
+            "message": "Time series refreshed successfully", 
+            "countries": len(fresh_data["series"]),
+            "months": len(fresh_data["dates"]),
+            "period": f"January 2025 - {datetime.now().strftime('%B %Y')}"
+        })
+    else:
+        return jsonify({
+            "message": "Failed to refresh time series", 
+            "error": "Could not fetch from Google Trends - using fallback data"
+        }), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8080))
-    logger.info(f"Starting Flask app on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
