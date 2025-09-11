@@ -119,7 +119,8 @@ def fetch_timeseries_data():
     """Fetch time series data for the 5 tracked countries"""
     try:
         logger.info("Starting time series data fetch...")
-        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25), retries=2, backoff_factor=1.0)
+        # Simplified initialization to avoid urllib3 compatibility issues
+        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
         country_data = {}
         date_labels = None
         
